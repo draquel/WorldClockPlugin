@@ -11,6 +11,7 @@ class ADirectionalLight;
 class ASkyLight;
 class AExponentialHeightFog;
 class UMaterialParameterCollection;
+class UPostProcessComponent;
 class UWorldClockSubsystem;
 
 /**
@@ -23,6 +24,11 @@ class UWorldClockSubsystem;
  * Curves map Daylight (0 night .. 1 noon) to multipliers of the lights' authored values, so a map's
  * own look stays the "noon" reference. Defaults keep a faint moon at night so the world remains
  * navigable until feature 7 adds torches.
+ *
+ * Auto-exposure would otherwise lift a moonlit scene back to daylight brightness, so the controller
+ * carries an unbound post-process component that applies ExposureBiasByDaylight (stops, 0 by day)
+ * on top of whatever exposure the map's own volumes settle on. Disable bDriveExposure for maps that
+ * manage exposure themselves.
  */
 UCLASS(BlueprintType, Blueprintable)
 class WORLDCLOCK_API ADayNightController : public AActor
@@ -54,6 +60,18 @@ public:
 	/** Find missing targets by class at BeginPlay. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Targets")
 	bool bAutoFindTargets = true;
+
+	/** Apply ExposureBiasByDaylight through the unbound post-process component (keeps night dark under auto-exposure). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Exposure")
+	bool bDriveExposure = true;
+
+	/** Exposure bias in stops by Daylight: negative at night so the faint moon reads as night, 0 at noon. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Exposure")
+	FRuntimeFloatCurve ExposureBiasByDaylight;
+
+	/** Unbound, high-priority post-process carrying the exposure bias. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "DayNight|Exposure")
+	TObjectPtr<UPostProcessComponent> ExposurePostProcess;
 
 	/** Sun intensity multiplier of the authored value by Daylight (0.0083 ~ a faint moon at 6 lux authored). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Curves")

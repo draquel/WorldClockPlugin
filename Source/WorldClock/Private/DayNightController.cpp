@@ -8,6 +8,7 @@
 
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/PostProcessComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
@@ -43,6 +44,16 @@ ADayNightController::ADayNightController()
 	SetCurve(SunIntensityByDaylight, { {0.0f, 0.0083f}, {0.15f, 0.05f}, {0.5f, 0.55f}, {1.0f, 1.0f} });
 	SetCurve(SkyLightIntensityByDaylight, { {0.0f, 0.12f}, {0.3f, 0.45f}, {1.0f, 1.0f} });
 	SetCurve(FogDensityByDaylight, { {0.0f, 1.6f}, {0.5f, 1.2f}, {1.0f, 1.0f} });
+	// About 3.5 stops under the daytime exposure at night; twilight sits between.
+	SetCurve(ExposureBiasByDaylight, { {0.0f, -3.5f}, {0.25f, -1.5f}, {1.0f, 0.0f} });
+
+	ExposurePostProcess = CreateDefaultSubobject<UPostProcessComponent>(TEXT("ExposurePostProcess"));
+	ExposurePostProcess->SetupAttachment(Root);
+	ExposurePostProcess->bUnbound = true;
+	ExposurePostProcess->Priority = 100.0f; // after the map's own volumes, so the bias stacks on their result
+	ExposurePostProcess->BlendWeight = 1.0f;
+	ExposurePostProcess->Settings.bOverride_AutoExposureBias = true;
+	ExposurePostProcess->Settings.AutoExposureBias = 0.0f;
 }
 
 void ADayNightController::BeginPlay()
@@ -146,6 +157,12 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 		UExponentialHeightFogComponent* Fog = HeightFog->GetComponent();
 		Fog->SetFogDensity(AuthoredFogDensity * FogDensityByDaylight.GetRichCurveConst()->Eval(Daylight));
 		Fog->SetFogInscatteringColor(FMath::Lerp(FogColorNight, FogColorDay, Daylight));
+	}
+	if (ExposurePostProcess)
+	{
+		ExposurePostProcess->bEnabled = bDriveExposure;
+		ExposurePostProcess->Settings.bOverride_AutoExposureBias = true;
+		ExposurePostProcess->Settings.AutoExposureBias = ExposureBiasByDaylight.GetRichCurveConst()->Eval(Daylight);
 	}
 	if (ParameterCollection)
 	{

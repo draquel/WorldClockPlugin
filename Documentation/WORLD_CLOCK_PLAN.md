@@ -3,7 +3,7 @@
 Roadmap row: *"Surface time-of-day driving the sun. Prerequisite for darkness mattering."* Feature 7 (light as a
 mechanic) and feature 8 (surface gameplay) consume it; feature 9 (persistence) saves it.
 
-Status: **APPROVED 2026-10-10** (all D1–D8 as proposed; new repo; 24-minute day; faint moon at night).
+Status: **BUILT + VERIFIED 2026-10-10** (all D1–D8 as proposed; new repo; 24-minute day; faint moon at night). See §10.
 
 ## 1. Goal
 
@@ -77,7 +77,7 @@ clients that call them get a warning.
 - `Math.SunRotation` — hour → pitch / yaw (noon up, midnight down, sunrise / sunset on the horizon).
 - `Math.Phases` — boundaries with twilight width; wrap at midnight.
 - `Clock.Extrapolation` — a sync point + elapsed server time reproduces the authority's clock; wrap → new day.
-- `Clock.SaveState` — export / import round trip.
+- `Lighting.SunColor` — night blue, day white, warm only at the daytime horizon.
 
 ## 8. PR plan (user merges each)
 
@@ -96,3 +96,21 @@ clients that call them get a warning.
 | Night | `vox.Time 23` | dark with a faint moon, torches in the dungeon unaffected |
 | Fast-forward | `vox.TimeScale 600` | a full day in a few minutes; `vox.Clock` shows the day counter rising |
 | Pause | `vox.TimeScale 0` | sun and clock hold |
+
+## 10. Verification log (2026-10-10, PIE in VoxelDemo)
+
+- Tests: `WorldClock.Math.SunRotation`, `Math.Phases`, `Clock.Extrapolation`, `Lighting.SunColor` all pass in-editor.
+  `Math.Phases` caught a real bug: the first daylight ramp measured "nearest edge" on the 24-hour circle, which
+  aliases when night is exactly 12 hours (sunset read 0 instead of 0.5); it now measures hours since sunrise.
+- Demo wiring (`Scripts/configure_world_clock.py`): `MPC_WorldClock` created, `DayNightController` placed in
+  `VoxelDemo` bound to `DirectionalLight` / `SkyLight` / `ExponentialHeightFog`. The controller Blueprint lives in
+  VoxelCharacterPlugin (which stays clock-agnostic), so the demo got `BP_VoxelDemoPlayerController` (a game-side
+  subclass with `ClockWidgetClass = WorldClockWidget`) and `BP_ThirdPersonGameMode` now points at it.
+- Clock runs: HUD reads `Day 1  08:00` top-centre at PIE start and `08:32` about 32 s later (1 h / min).
+- Sunset: `vox.Time 17:30` → warm low sun; `vox.Time 18:30` logs `phase Day -> Dusk`; `vox.Time 23` logs
+  `Dusk -> Night`.
+- Fast-forward: `vox.TimeScale 600` → `day 2 01:06` after 12 s. Pause: `vox.TimeScale 0` holds `01:17` across
+  two reads 6 s apart.
+- First night pass was far too bright: the map has no post-process volume, so default auto-exposure lifted the
+  moonlit scene back to daylight. Fix: the controller now carries an unbound `UPostProcessComponent` applying an
+  exposure bias curve (-3.5 stops at night, 0 by day).

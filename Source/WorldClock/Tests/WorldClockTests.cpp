@@ -29,11 +29,11 @@ bool FWorldClockSunRotationTest::RunTest(const FString& Parameters)
 
 	// The light rotation points down at noon and its yaw sweeps 180 degrees between sunrise and sunset.
 	const FRotator Noon = UWorldClockMath::SunRotationForHour(12.0f, 6.0f, 18.0f, 0.0f);
-	TestEqual(TEXT("Noon light pitches straight down"), Noon.Pitch, -90.0f, 0.01f);
+	TestEqual(TEXT("Noon light pitches straight down"), static_cast<float>(Noon.Pitch), -90.0f, 0.01f);
 	const FRotator Rise = UWorldClockMath::SunRotationForHour(6.0f, 6.0f, 18.0f, 30.0f);
 	const FRotator Set = UWorldClockMath::SunRotationForHour(18.0f, 6.0f, 18.0f, 30.0f);
-	TestEqual(TEXT("Sunrise yaw = azimuth + 180"), FRotator::NormalizeAxis(Rise.Yaw), FRotator::NormalizeAxis(210.0f), 0.01f);
-	TestEqual(TEXT("Sunset yaw = azimuth"), FRotator::NormalizeAxis(Set.Yaw), FRotator::NormalizeAxis(30.0f), 0.01f);
+	TestEqual(TEXT("Sunrise yaw = azimuth + 180"), static_cast<float>(FRotator::NormalizeAxis(Rise.Yaw)), static_cast<float>(FRotator::NormalizeAxis(210.0)), 0.01f);
+	TestEqual(TEXT("Sunset yaw = azimuth"), static_cast<float>(FRotator::NormalizeAxis(Set.Yaw)), static_cast<float>(FRotator::NormalizeAxis(30.0)), 0.01f);
 	return true;
 }
 
@@ -63,7 +63,7 @@ bool FWorldClockPhasesTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Daylight climbs through dawn"), Daylight(5.5f) < Daylight(6.0f) && Daylight(6.0f) < Daylight(6.5f));
 	TestEqual(TEXT("After dusk daylight 0"), Daylight(19.5f), 0.0f, 0.001f);
 
-	TestEqual(TEXT("Phase tag"), UWorldClockMath::PhaseTag(EWorldClockPhase::Dusk), WorldClockTags::Time_Phase_Dusk);
+	TestTrue(TEXT("Phase tag"), UWorldClockMath::PhaseTag(EWorldClockPhase::Dusk) == FGameplayTag(WorldClockTags::Time_Phase_Dusk));
 	return true;
 }
 

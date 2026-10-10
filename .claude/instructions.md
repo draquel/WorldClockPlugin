@@ -25,6 +25,8 @@
   first `ADirectionalLight` / `ASkyLight` / `AExponentialHeightFog` when its references are empty, captures their
   authored values at BeginPlay (noon reference) and applies curve multipliers by Daylight plus sun rotation /
   colour and fog colour; writes `TimeOfDay` / `Daylight` scalars to an optional `UMaterialParameterCollection`.
+  Carries an unbound `UPostProcessComponent` (priority 100) applying `ExposureBiasByDaylight` (-3.5 stops at
+  night) so auto-exposure cannot lift the moonlit scene back to day brightness (`bDriveExposure`).
   The subsystem auto-spawns one when the world has none (settings).
 - `UWorldClockWidget`: code-built HUD text "Day N  HH:MM" + phase; the game's controller decides where it goes.
 - `FWorldClockSaveState` + `ExportState` / `ImportState` for a save system.

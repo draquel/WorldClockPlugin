@@ -86,17 +86,28 @@ EWorldClockPhase UWorldClockMath::PhaseForHour(float Hour, float SunriseHour, fl
 
 float UWorldClockMath::DaylightForHour(float Hour, float SunriseHour, float SunsetHour, float TwilightHours)
 {
-	const float H = FMath::Fmod(Hour + 24.0f, 24.0f);
+	// Measured from sunrise so the day / night halves never alias on the 24-hour circle (a 12-hour
+	// night puts sunrise exactly opposite sunset, where a symmetric "nearest edge" test is ambiguous).
 	const float W = FMath::Max(TwilightHours, 0.01f);
-	// Signed hours from the nearest of sunrise / sunset, taking midnight wrap into account.
-	auto Delta = [](float A, float B) -> float
+	const float DayLength = FMath::Fmod(SunsetHour - SunriseHour + 48.0f, 24.0f);
+	const float Since = FMath::Fmod(Hour - SunriseHour + 48.0f, 24.0f); // hours since sunrise, 0 .. 24
+	float Daylight;
+	if (Since < DayLength)
 	{
-		float D = FMath::Fmod(A - B + 36.0f, 24.0f) - 12.0f; // -12 .. 12
-		return D;
-	};
-	const float Rise = FMath::Clamp((Delta(H, SunriseHour) + W) / (2.0f * W), 0.0f, 1.0f); // 0 before dawn .. 1 after
-	const float Set = FMath::Clamp((Delta(H, SunsetHour) + W) / (2.0f * W), 0.0f, 1.0f);   // 0 before dusk .. 1 after
-	const float Daylight = Rise * (1.0f - Set);
+		// Day: the sunrise ramp finishes W after sunrise; the sunset ramp starts W before sunset.
+		const float Rise = FMath::Clamp((Since + W) / (2.0f * W), 0.0f, 1.0f);
+		const float Set = FMath::Clamp((Since - DayLength + W) / (2.0f * W), 0.0f, 1.0f);
+		Daylight = Rise * (1.0f - Set);
+	}
+	else
+	{
+		// Night: the sunset ramp keeps fading for W after sunset; the sunrise ramp starts W before sunrise.
+		const float SinceSunset = Since - DayLength;
+		const float UntilSunrise = 24.0f - Since;
+		const float Fading = 1.0f - FMath::Clamp((SinceSunset + W) / (2.0f * W), 0.0f, 1.0f);
+		const float Rising = FMath::Clamp((W - UntilSunrise) / (2.0f * W), 0.0f, 1.0f);
+		Daylight = FMath::Clamp(Fading + Rising, 0.0f, 1.0f);
+	}
 	return FMath::SmoothStep(0.0f, 1.0f, Daylight);
 }
 
