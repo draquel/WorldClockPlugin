@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "World Clock",
+	"Description": "A server-authoritative game clock with client extrapolation, dawn/day/dusk/night phases as gameplay tags, a day-night lighting controller (sun, sky light, fog, material parameter collection) and a HUD clock widget. Depends only on engine modules + GameplayTags + UMG.",
+	"Category": "Gameplay",
+	"CreatedBy": "Daniel Raquel",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"EnabledByDefault": true,
+	"Modules": [
+		{
+			"Name": "WorldClock",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
