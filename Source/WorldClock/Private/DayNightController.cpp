@@ -9,12 +9,16 @@
 #include "Components/DirectionalLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/PostProcessComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "Materials/MaterialParameterCollection.h"
 
@@ -87,6 +91,80 @@ void ADayNightController::FindTargets()
 	{
 		for (TActorIterator<AExponentialHeightFog> It(World); It; ++It) { HeightFog = *It; break; }
 	}
+	if (!SkyAtmosphereActor)
+	{
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (It->FindComponentByClass<USkyAtmosphereComponent>())
+			{
+				SkyAtmosphereActor = *It;
+				break;
+			}
+		}
+	}
+}
+
+bool ADayNightController::GetViewerLocation(FVector& OutLocation) const
+{
+	const UWorld* World = GetWorld();
+	const APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	if (!PC)
+	{
+		return false;
+	}
+	if (const APawn* Pawn = PC->GetPawn())
+	{
+		OutLocation = Pawn->GetActorLocation();
+		return true;
+	}
+	if (PC->PlayerCameraManager)
+	{
+		OutLocation = PC->PlayerCameraManager->GetCameraLocation();
+		return true;
+	}
+	return false;
+}
+
+void ADayNightController::ApplyPlanetSky(const UWorldClockSubsystem& Clock)
+{
+	if (bPlanetSkyApplied)
+	{
+		return;
+	}
+	bPlanetSkyApplied = true;
+	USkyAtmosphereComponent* Sky = SkyAtmosphereActor ? SkyAtmosphereActor->FindComponentByClass<USkyAtmosphereComponent>() : nullptr;
+	if (Sky)
+	{
+		// The engine's sky is already a sphere around a planet: tell it where the planet is (BottomRadius in km).
+		Sky->SetMobility(EComponentMobility::Movable);
+		Sky->TransformMode = ESkyAtmosphereTransformMode::PlanetCenterAtComponentTransform;
+		Sky->SetWorldLocation(Clock.GetPlanetCenter());
+		Sky->SetBottomRadius(FMath::Max(Clock.GetPlanetSeaRadius() / 100000.0f, 0.1f));
+		Sky->MarkRenderStateDirty();
+	}
+	int32 Hidden = 0;
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (!ZUpSkyTag.IsNone() && It->ActorHasTag(ZUpSkyTag))
+			{
+				It->SetActorHiddenInGame(true);
+				++Hidden;
+			}
+		}
+	}
+	if (HeightFog)
+	{
+		HeightFog->SetActorHiddenInGame(true);
+		if (UExponentialHeightFogComponent* Fog = HeightFog->GetComponent())
+		{
+			Fog->SetVisibility(false);
+		}
+	}
+	UE_LOG(LogWorldClock, Log, TEXT("DayNightController: planet sky: atmosphere %s at %s (ground %.3f km), %d Z-up sky actor(s) hidden, height fog %s."),
+		*GetNameSafe(SkyAtmosphereActor), *Clock.GetPlanetCenter().ToCompactString(), Clock.GetPlanetSeaRadius() / 100000.0f, Hidden,
+		HeightFog ? TEXT("hidden") : TEXT("none"));
 }
 
 void ADayNightController::CaptureAuthoredValues()
@@ -134,9 +212,17 @@ void ADayNightController::Tick(float DeltaSeconds)
 void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 {
 	const UWorldClockSettings* S = UWorldClockSettings::Get();
-	const float Hour = Clock.GetHour();
-	const float Daylight = Clock.GetDaylight();
-	const float Elevation = UWorldClockMath::SunElevationForHour(Hour, S->SunriseHour, S->SunsetHour);
+	// On a planet the light is the sun's true elevation where the player stands, the hour the local one (D12).
+	FVector Viewer;
+	const bool bPlanet = Clock.HasPlanetFrame();
+	const bool bLocal = bPlanet && GetViewerLocation(Viewer);
+	if (bPlanet)
+	{
+		ApplyPlanetSky(Clock);
+	}
+	const float Hour = bLocal ? Clock.GetLocalHour(Viewer) : Clock.GetHour();
+	const float Daylight = bLocal ? Clock.GetLocalDaylight(Viewer) : Clock.GetDaylight();
+	const float Elevation = bLocal ? Clock.GetLocalSunElevation(Viewer) : UWorldClockMath::SunElevationForHour(Hour, S->SunriseHour, S->SunsetHour);
 	LastDaylight = Daylight;
 
 	if (SunLight)
@@ -152,7 +238,7 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 	{
 		SkyLight->GetLightComponent()->SetIntensity(AuthoredSkyLightIntensity * SkyLightIntensityByDaylight.GetRichCurveConst()->Eval(Daylight));
 	}
-	if (HeightFog && HeightFog->GetComponent())
+	if (HeightFog && HeightFog->GetComponent() && !bPlanet)
 	{
 		UExponentialHeightFogComponent* Fog = HeightFog->GetComponent();
 		Fog->SetFogDensity(AuthoredFogDensity * FogDensityByDaylight.GetRichCurveConst()->Eval(Daylight));

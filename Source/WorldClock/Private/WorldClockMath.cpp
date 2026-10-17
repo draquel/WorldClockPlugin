@@ -118,6 +118,36 @@ double UWorldClockMath::Extrapolate(double SyncTimeOfDay, int32 SyncDay, double 
 	return WrapTimeOfDay(SyncTimeOfDay + Elapsed * TimeScale, OutDay);
 }
 
+float UWorldClockMath::LocalHourOffset(const FVector& Direction)
+{
+	if (FMath::IsNearlyZero(Direction.X) && FMath::IsNearlyZero(Direction.Y))
+	{
+		return 0.0f; // a pole: every longitude, read as 0
+	}
+	return static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Direction.Y, Direction.X)) / 15.0);
+}
+
+float UWorldClockMath::WrapHour(float Hour)
+{
+	const float Wrapped = FMath::Fmod(Hour, 24.0f);
+	return Wrapped < 0.0f ? Wrapped + 24.0f : Wrapped;
+}
+
+FVector UWorldClockMath::PlanetSunDirection(float Hour)
+{
+	const double Longitude = FMath::DegreesToRadians((12.0 - static_cast<double>(Hour)) * 15.0);
+	return FVector(FMath::Cos(Longitude), FMath::Sin(Longitude), 0.0);
+}
+
+float UWorldClockMath::DaylightForElevation(float ElevationDegrees, float SunriseHour, float SunsetHour, float TwilightHours)
+{
+	const float DayLength = FMath::Max(FMath::Fmod(SunsetHour - SunriseHour + 48.0f, 24.0f), 0.01f);
+	const float NightLength = FMath::Max(24.0f - DayLength, 0.01f);
+	const float E = FMath::Clamp(ElevationDegrees, -90.0f, 90.0f);
+	const float Hour = SunriseHour + E / 90.0f * 0.5f * (E >= 0.0f ? DayLength : NightLength);
+	return DaylightForHour(WrapHour(Hour), SunriseHour, SunsetHour, TwilightHours);
+}
+
 FGameplayTag UWorldClockMath::PhaseTag(EWorldClockPhase Phase)
 {
 	switch (Phase)

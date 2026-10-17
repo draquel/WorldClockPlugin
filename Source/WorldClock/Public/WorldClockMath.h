@@ -63,4 +63,39 @@ public:
 	/** The Time.Phase.* tag for a phase. */
 	UFUNCTION(BlueprintPure, Category = "WorldClock|Math")
 	static FGameplayTag PhaseTag(EWorldClockPhase Phase);
+
+	// --- Planets (spherical Phase 4, decision D12): a world-fixed sun over a planet turning once a day, no axial tilt ---
+
+	/**
+	 * How far a place's local solar hour runs ahead of the clock: its longitude / 15 (longitude from +X toward +Y about the
+	 * planet's +Z axis, as vox.TPLatLon reads it).
+	 * @param Direction Direction from the planet centre
+	 * @return Hours (-12 .. 12)
+	 */
+	UFUNCTION(BlueprintPure, Category = "WorldClock|Math")
+	static float LocalHourOffset(const FVector& Direction);
+
+	/** An hour wrapped into 0 .. 24. */
+	UFUNCTION(BlueprintPure, Category = "WorldClock|Math")
+	static float WrapHour(float Hour);
+
+	/**
+	 * The direction toward the sun at a clock hour: over the equator at longitude (12 - Hour) * 15 degrees, so it is noon
+	 * where the local hour is 12 and the sun sets where it is 18.
+	 * @param Hour Clock (longitude 0) hour
+	 * @return Unit direction toward the sun
+	 */
+	UFUNCTION(BlueprintPure, Category = "WorldClock|Math")
+	static FVector PlanetSunDirection(float Hour);
+
+	/**
+	 * Daylight for a true sun elevation: DaylightForHour at the morning hour the clock's own arc reaches that elevation,
+	 * sunrise + e / 90 * half the day (before sunrise: half the night). On a planet's equator the elevation runs 15
+	 * degrees an hour, so with sunrise 6 and sunset 18 this equals the hour curve there; at the poles the sun stays on
+	 * the horizon and so does the light.
+	 * @param ElevationDegrees Sun elevation (-90 .. 90)
+	 * @return Daylight (0 .. 1)
+	 */
+	UFUNCTION(BlueprintPure, Category = "WorldClock|Math")
+	static float DaylightForElevation(float ElevationDegrees, float SunriseHour, float SunsetHour, float TwilightHours);
 };
