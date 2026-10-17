@@ -114,3 +114,24 @@ clients that call them get a warning.
 - First night pass was far too bright: the map has no post-process volume, so default auto-exposure lifted the
   moonlit scene back to daylight. Fix: the controller now carries an unbound `UPostProcessComponent` applying an
   exposure bias curve (-3.5 stops at night, 0 by day).
+
+## 11. Planets (VoxelWorlds spherical Phase 4, 2026-10-17)
+
+Decision D12 (VoxelWorlds `WORLD_MODES_REVIEW_PLAN.md` §8, §18): a **world-fixed sun** over a planet that cannot turn.
+With a planet frame (`UWorldClockSubsystem::SetPlanetFrame(Centre, SeaRadius)`, set by VoxelWorldPOI's
+`UPOIPlanetClockBridge` once the chunk manager reports a shell) the sun's direction is (cos λs, sin λs, 0) with
+λs = (12 − hour) × 15°, at declination 0 (no axial tilt), and the clock's hour is the local solar hour at longitude 0.
+
+- Local solar time at a place: the hour + longitude / 15 (`UWorldClockMath::LocalHourOffset`, `WrapHour`):
+  `GetLocalHour`, `GetLocalDay`, `GetLocalPhase` (the plane's hour rules), `GetLocalTimeText`; `LocalToGlobal` and
+  `SetLocalTimeOfDay` convert a local time back.
+- Light by the sun's true elevation at the viewer: `DaylightForElevation(e)` = `DaylightForHour` at the morning hour of
+  the same elevation, so on the equator it equals the hour curve (sunrise 6, sunset 18) and the poles sit in a low sun.
+- The controller centres the SkyAtmosphere on the planet (`PlanetCenterAtComponentTransform`, bottom radius = the sea
+  radius in km), skips the height fog and hides actors tagged `WorldClock.ZUpSky` (the setup script tags PlanetTest's sky
+  sphere); the widget shows the local day, time and phase.
+- Consumers on local time: the HUD, the surface NPC spawner (each creature's phase where it stands), sleeping at a
+  campsite (wakes at the local dawn there), `vox.Time` (sets the local hour where the pawn stands) and `vox.Clock`.
+- Without a frame every `Local*` function returns the global value, so heightmap worlds are unchanged.
+- Tests: `WorldClock.Planet.SolarTime`, `WorldClock.Planet.Sky`. Live (the exit check on `Review_Planet`): 17:32 local
+  Day with the sun at 6.8°, 18:15 Dusk at −3.7°, 23:02 Night at −71°, fast-forward over two days, pause holds.

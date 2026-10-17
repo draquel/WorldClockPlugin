@@ -53,6 +53,17 @@ public:
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "DayNight|Targets")
 	TObjectPtr<AExponentialHeightFog> HeightFog;
 
+	/**
+	 * The actor carrying the USkyAtmosphereComponent (found when empty). With a planet frame (spherical Phase 4, D12) the
+	 * atmosphere is centred on the planet (PlanetCenterAtComponentTransform) with its ground at the sea radius.
+	 */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "DayNight|Targets")
+	TObjectPtr<AActor> SkyAtmosphereActor;
+
+	/** With a planet frame, actors carrying this tag (a Z-up sky sphere) are hidden; so is the height fog. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
+	FName ZUpSkyTag = TEXT("WorldClock.ZUpSky");
+
 	/** Optional: scalar parameters TimeOfDay (hours) and Daylight (0-1) are written here each tick for materials. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Targets")
 	TObjectPtr<UMaterialParameterCollection> ParameterCollection;
@@ -110,6 +121,13 @@ public:
 	static FLinearColor SunColorFor(float Daylight, float ElevationDegrees, const FLinearColor& Night, const FLinearColor& Day, const FLinearColor& Horizon);
 
 protected:
+	/** The local player's pawn (or camera) location: a planet's light is the sun's elevation there. */
+	bool GetViewerLocation(FVector& OutLocation) const;
+
+	/** Once a planet frame is set: centre the atmosphere on the planet, hide the Z-up sky and the height fog. */
+	void ApplyPlanetSky(const UWorldClockSubsystem& Clock);
+	bool bPlanetSkyApplied = false;
+
 	void FindTargets();
 	void CaptureAuthoredValues();
 	void Apply(const UWorldClockSubsystem& Clock);

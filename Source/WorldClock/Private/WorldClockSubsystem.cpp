@@ -175,8 +175,126 @@ float UWorldClockSubsystem::GetDaylight() const
 
 FRotator UWorldClockSubsystem::GetSunRotation() const
 {
+	if (bPlanetFrame)
+	{
+		// The light travels away from the sun.
+		return FRotationMatrix::MakeFromX(-UWorldClockMath::PlanetSunDirection(GetHour())).Rotator();
+	}
 	const UWorldClockSettings* S = UWorldClockSettings::Get();
 	return UWorldClockMath::SunRotationForHour(GetHour(), S->SunriseHour, S->SunsetHour, S->SunAzimuthDegrees);
+}
+
+void UWorldClockSubsystem::SetPlanetFrame(const FVector& Center, float SeaRadius)
+{
+	bPlanetFrame = true;
+	PlanetCenter = Center;
+	PlanetSeaRadius = SeaRadius;
+	UE_LOG(LogWorldClock, Log, TEXT("WorldClock: planet frame at %s (sea radius %.0f): a world-fixed sun, local solar time by longitude."),
+		*Center.ToCompactString(), SeaRadius);
+}
+
+void UWorldClockSubsystem::ClearPlanetFrame()
+{
+	bPlanetFrame = false;
+}
+
+float UWorldClockSubsystem::GetLocalHour(const FVector& WorldPos) const
+{
+	if (!bPlanetFrame)
+	{
+		return GetHour();
+	}
+	return UWorldClockMath::WrapHour(GetHour() + UWorldClockMath::LocalHourOffset(WorldPos - PlanetCenter));
+}
+
+int32 UWorldClockSubsystem::GetLocalDay(const FVector& WorldPos) const
+{
+	if (!bPlanetFrame)
+	{
+		return GetDay();
+	}
+	const double Total = static_cast<double>(GetDay()) * 24.0 + GetHour() + UWorldClockMath::LocalHourOffset(WorldPos - PlanetCenter);
+	return FMath::FloorToInt32(Total / 24.0);
+}
+
+EWorldClockPhase UWorldClockSubsystem::GetLocalPhase(const FVector& WorldPos) const
+{
+	if (!bPlanetFrame)
+	{
+		return GetPhase();
+	}
+	const UWorldClockSettings* S = UWorldClockSettings::Get();
+	return UWorldClockMath::PhaseForHour(GetLocalHour(WorldPos), S->SunriseHour, S->SunsetHour, S->TwilightHours);
+}
+
+float UWorldClockSubsystem::GetLocalSunElevation(const FVector& WorldPos) const
+{
+	if (!bPlanetFrame)
+	{
+		const UWorldClockSettings* S = UWorldClockSettings::Get();
+		return UWorldClockMath::SunElevationForHour(GetHour(), S->SunriseHour, S->SunsetHour);
+	}
+	const FVector Up = (WorldPos - PlanetCenter).GetSafeNormal();
+	return static_cast<float>(FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(FVector::DotProduct(Up, UWorldClockMath::PlanetSunDirection(GetHour())), -1.0, 1.0))));
+}
+
+float UWorldClockSubsystem::GetLocalDaylight(const FVector& WorldPos) const
+{
+	if (!bPlanetFrame)
+	{
+		return GetDaylight();
+	}
+	const UWorldClockSettings* S = UWorldClockSettings::Get();
+	return UWorldClockMath::DaylightForElevation(GetLocalSunElevation(WorldPos), S->SunriseHour, S->SunsetHour, S->TwilightHours);
+}
+
+FText UWorldClockSubsystem::GetLocalTimeText(const FVector& WorldPos) const
+{
+	if (!bPlanetFrame)
+	{
+		return GetTimeText();
+	}
+	return UWorldClockMath::FormatTimeOfDay(static_cast<double>(GetLocalHour(WorldPos)) * WorldClockConstants::SecondsPerHour);
+}
+
+FVector UWorldClockSubsystem::GetSunDirection() const
+{
+	return bPlanetFrame ? UWorldClockMath::PlanetSunDirection(GetHour()) : -GetSunRotation().Vector();
+}
+
+void UWorldClockSubsystem::LocalToGlobal(const FVector& WorldPos, int32 LocalDay, float LocalHour, int32& OutDay, double& OutSeconds) const
+{
+	if (!bPlanetFrame)
+	{
+		OutDay = LocalDay;
+		OutSeconds = static_cast<double>(LocalHour) * WorldClockConstants::SecondsPerHour;
+		return;
+	}
+	const double Total = static_cast<double>(LocalDay) * 24.0 + LocalHour - UWorldClockMath::LocalHourOffset(WorldPos - PlanetCenter);
+	OutDay = FMath::FloorToInt32(Total / 24.0);
+	OutSeconds = FMath::Clamp((Total - OutDay * 24.0) * WorldClockConstants::SecondsPerHour, 0.0, WorldClockConstants::SecondsPerDay - 1.0e-3);
+}
+
+void UWorldClockSubsystem::SetLocalTimeOfDay(const FVector& WorldPos, float Hours)
+{
+	if (!bPlanetFrame)
+	{
+		SetTimeOfDay(Hours);
+		return;
+	}
+	if (!HasAuthority())
+	{
+		UE_LOG(LogWorldClock, Warning, TEXT("SetLocalTimeOfDay(%.2f) called on a client — ignored."), Hours);
+		return;
+	}
+	int32 NewDay = Day;
+	double NewSeconds = 0.0;
+	LocalToGlobal(WorldPos, GetLocalDay(WorldPos), FMath::Clamp(Hours, 0.0f, 24.0f - 1.0e-4f), NewDay, NewSeconds);
+	Day = NewDay;
+	TimeOfDaySeconds = NewSeconds;
+	PublishSync();
+	UE_LOG(LogWorldClock, Log, TEXT("WorldClock: local time at %s set to %s (clock %s, day %d)."), *WorldPos.ToCompactString(),
+		*GetLocalTimeText(WorldPos).ToString(), *GetTimeText().ToString(), Day);
 }
 
 FText UWorldClockSubsystem::GetTimeText() const

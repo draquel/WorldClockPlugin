@@ -7,6 +7,7 @@
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
+#include "GameFramework/Pawn.h"
 
 void UWorldClockWidget::NativeOnInitialized()
 {
@@ -63,10 +64,21 @@ void UWorldClockWidget::Refresh()
 		if (PhaseText) { PhaseText->SetText(FText::GetEmpty()); }
 		return;
 	}
-	ClockText->SetText(FText::Format(NSLOCTEXT("WorldClock", "ClockLine", "Day {0}  {1}"), Clock->GetDay(), Clock->GetTimeText()));
+	// On a planet the local solar time where the player stands (spherical Phase 4, D12).
+	const APawn* Pawn = Clock->HasPlanetFrame() ? GetOwningPlayerPawn() : nullptr;
+	if (Pawn)
+	{
+		const FVector Here = Pawn->GetActorLocation();
+		ClockText->SetText(FText::Format(NSLOCTEXT("WorldClock", "ClockLine", "Day {0}  {1}"), Clock->GetLocalDay(Here), Clock->GetLocalTimeText(Here)));
+	}
+	else
+	{
+		ClockText->SetText(FText::Format(NSLOCTEXT("WorldClock", "ClockLine", "Day {0}  {1}"), Clock->GetDay(), Clock->GetTimeText()));
+	}
 	if (PhaseText)
 	{
-		PhaseText->SetText(bShowPhase ? FText::FromString(UEnum::GetDisplayValueAsText(Clock->GetPhase()).ToString()) : FText::GetEmpty());
+		const EWorldClockPhase Phase = Pawn ? Clock->GetLocalPhase(Pawn->GetActorLocation()) : Clock->GetPhase();
+		PhaseText->SetText(bShowPhase ? FText::FromString(UEnum::GetDisplayValueAsText(Phase).ToString()) : FText::GetEmpty());
 		PhaseText->SetVisibility(bShowPhase ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 	}
 }

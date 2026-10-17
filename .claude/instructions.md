@@ -29,6 +29,15 @@
   night) so auto-exposure cannot lift the moonlit scene back to day brightness (`bDriveExposure`).
   The subsystem auto-spawns one when the world has none (settings).
 - `UWorldClockWidget`: code-built HUD text "Day N  HH:MM" + phase; the game's controller decides where it goes.
+- **Planets** (VoxelWorlds spherical Phase 4, decision D12): `SetPlanetFrame(Centre, SeaRadius)` / `ClearPlanetFrame`
+  (set by a game-side bridge; this plugin stays engine-only). With a frame the sun is world-fixed over the equator at
+  longitude (12 − hour) × 15° (`UWorldClockMath::PlanetSunDirection`, no axial tilt) and the clock's hour is the solar
+  hour at longitude 0. `GetLocalHour` / `GetLocalDay` / `GetLocalPhase` / `GetLocalDaylight` / `GetLocalSunElevation` /
+  `GetLocalTimeText` at a position (the hour + longitude / 15, `LocalHourOffset`), `LocalToGlobal`,
+  `SetLocalTimeOfDay`; without a frame every `Local*` is the global value. The controller's light curves read
+  `DaylightForElevation` at the viewer (equal to `DaylightForHour` on the equator with sunrise 6 / sunset 18); it
+  centres the SkyAtmosphere on the planet (`PlanetCenterAtComponentTransform`, bottom radius the sea radius in km) and
+  hides the height fog and actors tagged `WorldClock.ZUpSky`. The widget shows the local day, time and phase.
 - `FWorldClockSaveState` + `ExportState` / `ImportState` for a save system.
 
 ## Rules
@@ -36,4 +45,6 @@
 - Lighting changes go through the controller's curves / colours, not scattered `SetIntensity` calls.
 - Keep this plugin free of gameplay: darkness penalties, torches, schedules belong to consumers that bind
   the delegates or read `GetDaylight()` / `GetPhaseTag()`.
+- Consumers that act at a place (spawners, sleeping, the HUD) ask the `Local*` functions with that place: on a planet
+  the global hour is longitude 0's.
 - Tests: `WorldClock.*` (EditorContext | EngineFilter), pure, no world.

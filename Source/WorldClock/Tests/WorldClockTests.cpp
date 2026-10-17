@@ -7,6 +7,11 @@
 #include "WorldClockMath.h"
 #include "WorldClockTags.h"
 #include "WorldClockTypes.h"
+#include "WorldClockSubsystem.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "Engine/Engine.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Engine/World.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -109,6 +114,139 @@ bool FWorldClockSunColorTest::RunTest(const FString& Parameters)
 	const FLinearColor Dusk = ADayNightController::SunColorFor(0.5f, 0.0f, Night, Day, Horizon);
 	TestTrue(TEXT("Horizon by day is warm"), Dusk.R > Dusk.B);
 	TestTrue(TEXT("Below the horizon at night stays cool"), ADayNightController::SunColorFor(0.0f, -30.0f, Night, Day, Horizon).Equals(Night, 0.001f));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Planets (spherical Phase 4, D12; VoxelWorlds WORLD_MODES_REVIEW_PLAN.md §18, WM-SY14): local solar time by longitude,
+// a world-fixed sun turning about +Z once a day, daylight by the sun's true elevation equal to the hour curve on the
+// equator; the clock subsystem's Local* functions are the global values without a planet frame.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWorldClockPlanetSolarTimeTest, "WorldClock.Planet.SolarTime", WORLDCLOCK_TEST_FLAGS)
+bool FWorldClockPlanetSolarTimeTest::RunTest(const FString& Parameters)
+{
+	// Longitudes and the sun.
+	TestTrue(TEXT("Longitude 90: six hours ahead"), FMath::IsNearlyEqual(UWorldClockMath::LocalHourOffset(FVector(0, 1, 0)), 6.0f, 1.0e-4f));
+	TestTrue(TEXT("Longitude -90: six hours behind"), FMath::IsNearlyEqual(UWorldClockMath::LocalHourOffset(FVector(0, -1, 0)), -6.0f, 1.0e-4f));
+	TestEqual(TEXT("Longitude 0: the clock's hour"), UWorldClockMath::LocalHourOffset(FVector(1, 0, 0.5)), 0.0f);
+	TestEqual(TEXT("A pole reads as longitude 0"), UWorldClockMath::LocalHourOffset(FVector(0, 0, 1)), 0.0f);
+	TestTrue(TEXT("Noon at hour 12 over longitude 0"), UWorldClockMath::PlanetSunDirection(12.0f).Equals(FVector(1, 0, 0), 1.0e-6));
+	TestTrue(TEXT("Hour 18: the sun over longitude -90"), UWorldClockMath::PlanetSunDirection(18.0f).Equals(FVector(0, -1, 0), 1.0e-6));
+	TestEqual(TEXT("WrapHour(-1) = 23"), UWorldClockMath::WrapHour(-1.0f), 23.0f);
+
+	// On the equator at any longitude the sun climbs 15 degrees an hour and the light follows the hour curve.
+	double WorstElevation = 0.0, WorstDaylight = 0.0;
+	for (const float Longitude : { 0.0f, 37.0f, -120.0f, 179.0f })
+	{
+		const FVector Here(FMath::Cos(FMath::DegreesToRadians(Longitude)), FMath::Sin(FMath::DegreesToRadians(Longitude)), 0.0);
+		for (float Local = 0.0f; Local < 24.0f; Local += 0.25f)
+		{
+			const float Clock = UWorldClockMath::WrapHour(Local - Longitude / 15.0f);
+			const double Elevation = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(FVector::DotProduct(Here, UWorldClockMath::PlanetSunDirection(Clock)), -1.0, 1.0)));
+			WorstElevation = FMath::Max(WorstElevation, FMath::Abs(Elevation - (90.0 - FMath::Abs(Local - 12.0) * 15.0)));
+			const float ByElevation = UWorldClockMath::DaylightForElevation(static_cast<float>(Elevation), 6.0f, 18.0f, 1.0f);
+			WorstDaylight = FMath::Max(WorstDaylight, static_cast<double>(FMath::Abs(ByElevation - UWorldClockMath::DaylightForHour(Local, 6.0f, 18.0f, 1.0f))));
+		}
+	}
+	AddInfo(FString::Printf(TEXT("Equator: worst elevation %.2e deg, worst daylight %.2e"), WorstElevation, WorstDaylight));
+	TestTrue(TEXT("Equator: 15 degrees an hour from sunrise"), WorstElevation < 1.0e-3);
+	TestTrue(TEXT("Equator: daylight by elevation equals the hour curve"), WorstDaylight < 1.0e-3);
+	TestTrue(TEXT("A pole sits in twilight all day"), FMath::IsNearlyEqual(UWorldClockMath::DaylightForElevation(0.0f, 6.0f, 18.0f, 1.0f),
+		UWorldClockMath::DaylightForHour(6.0f, 6.0f, 18.0f, 1.0f), 1.0e-6f));
+
+	// The subsystem in a game world.
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("WorldClockPlanetTest"));
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	Context.SetCurrentWorld(World);
+	UWorldClockSubsystem* Clock = World->GetSubsystem<UWorldClockSubsystem>();
+	if (TestNotNull(TEXT("The game world has a clock"), Clock))
+	{
+		Clock->SetTimeOfDay(9.5f);
+		const FVector Here(250000.0, 250000.0, 1000.0);
+		TestFalse(TEXT("No planet frame by default"), Clock->HasPlanetFrame());
+		TestEqual(TEXT("No frame: the local hour is the hour"), Clock->GetLocalHour(Here), Clock->GetHour());
+		TestEqual(TEXT("No frame: the local day is the day"), Clock->GetLocalDay(Here), Clock->GetDay());
+		TestTrue(TEXT("No frame: the local phase is the phase"), Clock->GetLocalPhase(Here) == Clock->GetPhase());
+		TestEqual(TEXT("No frame: the local daylight is the daylight"), Clock->GetLocalDaylight(Here), Clock->GetDaylight());
+		TestTrue(TEXT("No frame: the local text is the text"), Clock->GetLocalTimeText(Here).EqualTo(Clock->GetTimeText()));
+		const FRotator PlaneSun = Clock->GetSunRotation();
+
+		const FVector Centre(1000.0, -2000.0, 500.0);
+		Clock->SetPlanetFrame(Centre, 249500.0f);
+		const FVector East = Centre + FVector(0.0, 1.0, 0.0) * 250000.0; // longitude 90
+		TestTrue(TEXT("Longitude 90 is six hours ahead"), FMath::IsNearlyEqual(Clock->GetLocalHour(East), 15.5f, 1.0e-3f));
+		TestTrue(TEXT("The sun light points away from the sun"), Clock->GetSunRotation().Vector().Equals(-UWorldClockMath::PlanetSunDirection(9.5f), 1.0e-5));
+		TestTrue(TEXT("The phase by the local hour"), Clock->GetLocalPhase(East) == UWorldClockMath::PhaseForHour(15.5f, 6.0f, 18.0f, 1.0f));
+
+		int32 GlobalDay = 0;
+		double GlobalSeconds = 0.0;
+		Clock->LocalToGlobal(East, Clock->GetLocalDay(East), Clock->GetLocalHour(East), GlobalDay, GlobalSeconds);
+		TestTrue(TEXT("LocalToGlobal inverts the local clock"), GlobalDay == Clock->GetDay() && FMath::IsNearlyEqual(GlobalSeconds, Clock->GetTimeOfDaySeconds(), 1.0));
+
+		const FVector West = Centre + FVector(0.0, -1.0, 0.0) * 250000.0; // longitude -90
+		Clock->SetLocalTimeOfDay(West, 7.25f);
+		AddInfo(FString::Printf(TEXT("Local 07:15 at longitude -90: clock %s day %d"), *Clock->GetTimeText().ToString(), Clock->GetDay()));
+		TestTrue(TEXT("SetLocalTimeOfDay sets the local hour there"), FMath::IsNearlyEqual(Clock->GetLocalHour(West), 7.25f, 1.0e-3f));
+		TestTrue(TEXT("... which is 13:15 on the clock"), FMath::IsNearlyEqual(Clock->GetHour(), 13.25f, 1.0e-3f));
+
+		Clock->ClearPlanetFrame();
+		Clock->SetTimeOfDay(9.5f);
+		TestTrue(TEXT("Cleared: the plane's sun again"), Clock->GetSunRotation().Equals(PlaneSun, 1.0e-4));
+	}
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Planets (WM-SY15): with a planet frame the controller centres the SkyAtmosphere on the planet with its ground at the
+// sea radius and hides the tagged Z-up sky and the height fog; without one it touches none of them.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWorldClockPlanetSkyTest, "WorldClock.Planet.Sky", WORLDCLOCK_TEST_FLAGS)
+bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
+{
+	for (const bool bPlanet : { false, true })
+	{
+		UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, bPlanet ? TEXT("WorldClockSkyPlanet") : TEXT("WorldClockSkyPlane"));
+		FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+		Context.SetCurrentWorld(World);
+		UWorldClockSubsystem* Clock = World->GetSubsystem<UWorldClockSubsystem>();
+		ASkyAtmosphere* SkyActor = World->SpawnActor<ASkyAtmosphere>();
+		AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>();
+		AActor* SkySphere = World->SpawnActor<AActor>();
+		SkySphere->Tags.Add(TEXT("WorldClock.ZUpSky"));
+		ADayNightController* Controller = World->SpawnActor<ADayNightController>();
+		USkyAtmosphereComponent* Sky = SkyActor ? SkyActor->FindComponentByClass<USkyAtmosphereComponent>() : nullptr;
+		if (TestNotNull(TEXT("A clock"), Clock) && TestNotNull(TEXT("A sky atmosphere"), Sky) && TestNotNull(TEXT("A controller"), Controller))
+		{
+			const ESkyAtmosphereTransformMode ModeBefore = Sky->TransformMode;
+			const float BottomBefore = Sky->BottomRadius;
+			const FVector Centre(1000.0, -2000.0, 500.0);
+			if (bPlanet)
+			{
+				Clock->SetPlanetFrame(Centre, 249500.0f);
+			}
+			Controller->SkyAtmosphereActor = SkyActor;
+			Controller->HeightFog = Fog;
+			Controller->Tick(0.0f);
+			if (bPlanet)
+			{
+				TestTrue(TEXT("Planet: the atmosphere's planet centre is its component"), Sky->TransformMode == ESkyAtmosphereTransformMode::PlanetCenterAtComponentTransform);
+				TestTrue(TEXT("Planet: the component at the planet centre"), Sky->GetComponentLocation().Equals(Centre, 1.0));
+				TestTrue(TEXT("Planet: the ground at the sea radius (km)"), FMath::IsNearlyEqual(Sky->BottomRadius, 2.495f, 1.0e-4f));
+				TestTrue(TEXT("Planet: the Z-up sky hidden"), SkySphere->IsHidden());
+				TestTrue(TEXT("Planet: the height fog hidden"), Fog->IsHidden());
+			}
+			else
+			{
+				TestTrue(TEXT("Plane: the atmosphere untouched"), Sky->TransformMode == ModeBefore && Sky->BottomRadius == BottomBefore);
+				TestFalse(TEXT("Plane: the sky shown"), SkySphere->IsHidden());
+				TestFalse(TEXT("Plane: the fog shown"), Fog->IsHidden());
+			}
+		}
+		GEngine->DestroyWorldContext(World);
+		World->DestroyWorld(false);
+	}
 	return true;
 }
 
