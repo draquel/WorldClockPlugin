@@ -64,6 +64,82 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
 	FName ZUpSkyTag = TEXT("WorldClock.ZUpSky");
 
+	/**
+	 * With a planet frame, scale the atmosphere to the planet (spherical Phase 6, WM-BP10): its height, its Rayleigh and Mie
+	 * scale heights and its ozone layer are the authored (Earth's) times GetPlanetSkyScale, and its scattering and
+	 * absorption divided by it, so the air straight up and over a view distance holds as much as authored and the sky
+	 * looks as authored from the ground, while from orbit the atmosphere is a thin shell around the planet (the engine's
+	 * 60 km over a 2.5 km planet was a glowing ball 24 times its size). The volumetric cloud layers in the level go with it
+	 * (ComputePlanetCloudLayer). Off: the authored atmosphere, only centred.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
+	bool bScalePlanetSky = true;
+
+	/** The scaled atmosphere reaches at least this many times the highest terrain over the sea (its peaks stay in the air). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet", meta = (ClampMin = "1.0"))
+	float PlanetAtmosphereOverTerrain = 4.0f;
+
+	/**
+	 * With a planet frame, the space exposure (WM-BP10): from the top half of the atmosphere up, auto-exposure meters the
+	 * brightest part of the view (SpaceExposurePostProcess: the histogram's low and high percent) instead of a frame mostly
+	 * black space, so the sunlit planet keeps its daylight exposure from orbit instead of washing out.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
+	bool bPlanetSpaceExposure = true;
+
+	/** The space exposure's metering: the histogram percentiles averaged in space (the brightest part of the view). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet", meta = (ClampMin = "0.0", ClampMax = "100.0"))
+	float SpaceExposureLowPercent = 70.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet", meta = (ClampMin = "0.0", ClampMax = "100.0"))
+	float SpaceExposureHighPercent = 98.0f;
+
+	/** Unbound post-process carrying the space exposure, weighted by GetSpaceExposureWeight. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "DayNight|Planet")
+	TObjectPtr<UPostProcessComponent> SpaceExposurePostProcess;
+
+	/** The atmosphere's scale on a planet (1 = as authored; set once the planet sky is applied). */
+	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
+	float GetPlanetSkyScale() const { return PlanetSkyScale; }
+
+	/** How much of the space exposure applies (0 in the lower atmosphere, 1 in space), as last applied. */
+	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
+	float GetSpaceExposureWeight() const { return SpaceExposureWeight; }
+
+	/**
+	 * Pure: the atmosphere's scale on a planet: the planet's radius over Earth's (6,360 km, the engine's default ground),
+	 * but at least enough for the atmosphere to reach OverTerrain times the highest terrain, at most 1.
+	 * @param SeaRadiusKm The sky's ground radius (km)
+	 * @param TerrainTopKm The highest terrain over it (km; 0 = unknown)
+	 * @param AuthoredHeightKm The authored atmosphere height (km)
+	 * @param OverTerrain PlanetAtmosphereOverTerrain
+	 * @return Scale in (0, 1]
+	 */
+	static float ComputePlanetSkyScale(float SeaRadiusKm, float TerrainTopKm, float AuthoredHeightKm, float OverTerrain);
+
+	/**
+	 * Pure: a volumetric cloud layer scaled with the atmosphere: its thickness times the sky's scale, its bottom the
+	 * authored bottom times the scale but at least the highest terrain (its altitudes are over the same ground as the
+	 * atmosphere's), so the layer stays inside the scaled atmosphere and above every peak; Earth's 5 km floor over a 50 km
+	 * planet was a halo of clouds far outside its air.
+	 * @param AuthoredBottomKm The authored layer bottom altitude (km)
+	 * @param AuthoredHeightKm The authored layer height (km)
+	 * @param SkyScale GetPlanetSkyScale
+	 * @param TerrainTopKm The highest terrain over the sea (km; 0 = unknown)
+	 * @param OutBottomKm The scaled bottom altitude (km)
+	 * @param OutHeightKm The scaled height (km)
+	 */
+	static void ComputePlanetCloudLayer(float AuthoredBottomKm, float AuthoredHeightKm, float SkyScale, float TerrainTopKm, float& OutBottomKm, float& OutHeightKm);
+
+	/**
+	 * Pure: the space exposure's weight at an altitude over the sea: 0 up to half the atmosphere's height, 1 from one and a
+	 * half of it, smooth between.
+	 * @param AltitudeKm Viewer altitude over the sky's ground (km)
+	 * @param AtmosphereHeightKm The (scaled) atmosphere height (km)
+	 * @return Weight 0..1
+	 */
+	static float ComputeSpaceExposureWeight(float AltitudeKm, float AtmosphereHeightKm);
+
 	/** Optional: scalar parameters TimeOfDay (hours) and Daylight (0-1) are written here each tick for materials. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Targets")
 	TObjectPtr<UMaterialParameterCollection> ParameterCollection;
@@ -124,9 +200,22 @@ protected:
 	/** The local player's pawn (or camera) location: a planet's light is the sun's elevation there. */
 	bool GetViewerLocation(FVector& OutLocation) const;
 
-	/** Once a planet frame is set: centre the atmosphere on the planet, hide the Z-up sky and the height fog. */
+	/** The local player's camera location (or pawn): where the view, and so the space exposure, is from. */
+	bool GetCameraLocation(FVector& OutLocation) const;
+
+	/**
+	 * Once a planet frame is set: centre the atmosphere on the planet with its ground at the sea radius, scale it to the
+	 * planet (bScalePlanetSky), hide the Z-up sky and the height fog.
+	 */
 	void ApplyPlanetSky(const UWorldClockSubsystem& Clock);
 	bool bPlanetSkyApplied = false;
+
+	/** Every tick on a planet: the space exposure's weight from the camera's altitude. */
+	void ApplySpaceExposure(const UWorldClockSubsystem& Clock);
+
+	float PlanetSkyScale = 1.0f;
+	float PlanetAtmosphereHeightKm = 0.0f;
+	float SpaceExposureWeight = 0.0f;
 
 	void FindTargets();
 	void CaptureAuthoredValues();

@@ -135,3 +135,29 @@ With a planet frame (`UWorldClockSubsystem::SetPlanetFrame(Centre, SeaRadius)`, 
 - Without a frame every `Local*` function returns the global value, so heightmap worlds are unchanged.
 - Tests: `WorldClock.Planet.SolarTime`, `WorldClock.Planet.Sky`. Live (the exit check on `Review_Planet`): 17:32 local
   Day with the sun at 6.8°, 18:15 Dusk at −3.7°, 23:02 Night at −71°, fast-forward over two days, pause holds.
+
+### The sky at scale (VoxelWorlds spherical Phase 6, WM-BP10, 2026-10-19)
+
+The engine's SkyAtmosphere is Earth's (a 60 km atmosphere, Rayleigh and Mie scale heights of 8 and 1.2 km): over a
+2.5 km planet it was a glowing ball 24 times the planet's size, over a 50 km one 1.2 times. With a planet frame the
+controller scales it to the planet (`bScalePlanetSky`): the atmosphere's height, its Rayleigh and Mie scale heights and
+its ozone layer times K, its scattering and absorption divided by K and the aerial perspective's distance scale times K,
+so a column of air straight up, and the haze over a view distance, hold what the authored one holds (the sky from the
+ground keeps its look) while from orbit the atmosphere is a thin shell. K = `ComputePlanetSkyScale`: the sea radius over
+Earth's 6,360 km, but at least enough for the air to reach `PlanetAtmosphereOverTerrain` (4) times the highest terrain over
+the sea, at most 1. `SetPlanetFrame(Centre, SeaRadius, TerrainTop)` takes the terrain's top (VoxelWorldPOI's bridge: the
+shell's top over the sea). On the review planets: the 2.5 km one 0.28 km of air (K 0.0047), the 50 km one 9.7 km (0.162),
+the 1,000 km one 33.8 km (0.564); the terrain decides on all three.
+
+**The cloud layers** go with the atmosphere (`ComputePlanetCloudLayer`): every `VolumetricCloud` in the level keeps its
+thickness times K and its floor at the authored floor times K but at least the terrain's top, so the layer stays inside
+the scaled air and above every peak (the engine's 5 km floor and 10 km thickness: 70-117 m on the 2.5 km planet, 2.43-4.05
+km on the 50 km one, 8.45-14.09 km on the 1,000 km one). Before, Earth's layer floated as a ring of clouds well outside a
+small planet's atmosphere from orbit (VoxelWorlds G46).
+
+**The space exposure** (`bPlanetSpaceExposure`): a second unbound post-process (`SpaceExposurePostProcess`) weighted in
+from half the atmosphere's height to one and a half of it (`ComputeSpaceExposureWeight`, by the camera's altitude over
+the sea) meters the histogram on the brightest part of the view (`SpaceExposureLowPercent` 70 to `SpaceExposureHighPercent`
+98) instead of a frame mostly black space, so the sunlit planet keeps its daylight exposure from orbit.
+
+Tests: `WorldClock.Planet.Sky` (the scaled heights, the column of air and the cloud layer), `WorldClock.Planet.SkyScale`.

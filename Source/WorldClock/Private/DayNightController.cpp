@@ -11,6 +11,7 @@
 #include "Components/PostProcessComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Components/VolumetricCloudComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
@@ -58,6 +59,14 @@ ADayNightController::ADayNightController()
 	ExposurePostProcess->BlendWeight = 1.0f;
 	ExposurePostProcess->Settings.bOverride_AutoExposureBias = true;
 	ExposurePostProcess->Settings.AutoExposureBias = 0.0f;
+
+	// Planets (spherical Phase 6, WM-BP10): weighted in by altitude, the histogram meters the brightest part of the view.
+	SpaceExposurePostProcess = CreateDefaultSubobject<UPostProcessComponent>(TEXT("SpaceExposurePostProcess"));
+	SpaceExposurePostProcess->SetupAttachment(Root);
+	SpaceExposurePostProcess->bUnbound = true;
+	SpaceExposurePostProcess->Priority = 101.0f;
+	SpaceExposurePostProcess->BlendWeight = 0.0f;
+	SpaceExposurePostProcess->bEnabled = false;
 }
 
 void ADayNightController::BeginPlay()
@@ -104,6 +113,42 @@ void ADayNightController::FindTargets()
 	}
 }
 
+bool ADayNightController::GetCameraLocation(FVector& OutLocation) const
+{
+	const UWorld* World = GetWorld();
+	const APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	if (PC && PC->PlayerCameraManager)
+	{
+		OutLocation = PC->PlayerCameraManager->GetCameraLocation();
+		return true;
+	}
+	return GetViewerLocation(OutLocation);
+}
+
+float ADayNightController::ComputePlanetSkyScale(float SeaRadiusKm, float TerrainTopKm, float AuthoredHeightKm, float OverTerrain)
+{
+	constexpr float EarthRadiusKm = 6360.0f;
+	const float ByRadius = SeaRadiusKm / EarthRadiusKm;
+	const float ByTerrain = AuthoredHeightKm > 0.0f ? FMath::Max(OverTerrain, 1.0f) * FMath::Max(TerrainTopKm, 0.0f) / AuthoredHeightKm : 0.0f;
+	return FMath::Clamp(FMath::Max(ByRadius, ByTerrain), 1.0e-4f, 1.0f);
+}
+
+void ADayNightController::ComputePlanetCloudLayer(float AuthoredBottomKm, float AuthoredHeightKm, float SkyScale, float TerrainTopKm, float& OutBottomKm, float& OutHeightKm)
+{
+	const float K = FMath::Clamp(SkyScale, 1.0e-4f, 1.0f);
+	OutBottomKm = FMath::Max(FMath::Max(AuthoredBottomKm, 0.0f) * K, FMath::Max(TerrainTopKm, 0.0f));
+	OutHeightKm = FMath::Max(AuthoredHeightKm, 0.0f) * K;
+}
+
+float ADayNightController::ComputeSpaceExposureWeight(float AltitudeKm, float AtmosphereHeightKm)
+{
+	if (AtmosphereHeightKm <= 0.0f)
+	{
+		return 0.0f;
+	}
+	return FMath::SmoothStep(0.5f * AtmosphereHeightKm, 1.5f * AtmosphereHeightKm, AltitudeKm);
+}
+
 bool ADayNightController::GetViewerLocation(FVector& OutLocation) const
 {
 	const UWorld* World = GetWorld();
@@ -133,16 +178,39 @@ void ADayNightController::ApplyPlanetSky(const UWorldClockSubsystem& Clock)
 	}
 	bPlanetSkyApplied = true;
 	USkyAtmosphereComponent* Sky = SkyAtmosphereActor ? SkyAtmosphereActor->FindComponentByClass<USkyAtmosphereComponent>() : nullptr;
+	PlanetSkyScale = 1.0f;
+	PlanetAtmosphereHeightKm = 0.0f;
 	if (Sky)
 	{
 		// The engine's sky is already a sphere around a planet: tell it where the planet is (BottomRadius in km).
 		Sky->SetMobility(EComponentMobility::Movable);
 		Sky->TransformMode = ESkyAtmosphereTransformMode::PlanetCenterAtComponentTransform;
 		Sky->SetWorldLocation(Clock.GetPlanetCenter());
-		Sky->SetBottomRadius(FMath::Max(Clock.GetPlanetSeaRadius() / 100000.0f, 0.1f));
+		const float SeaRadiusKm = FMath::Max(Clock.GetPlanetSeaRadius() / 100000.0f, 0.1f);
+		Sky->SetBottomRadius(SeaRadiusKm);
+		// Scaled to the planet (spherical Phase 6, WM-BP10): the heights by K, the coefficients by 1 / K, so a column of air
+		// (and the aerial perspective over a distance, its distance scaled by K) holds what the authored one holds.
+		if (bScalePlanetSky)
+		{
+			const float K = ComputePlanetSkyScale(SeaRadiusKm, Clock.GetPlanetTerrainTop() / 100000.0f, Sky->AtmosphereHeight, PlanetAtmosphereOverTerrain);
+			PlanetSkyScale = K;
+			Sky->SetAtmosphereHeight(Sky->AtmosphereHeight * K);
+			Sky->SetRayleighExponentialDistribution(Sky->RayleighExponentialDistribution * K);
+			Sky->SetMieExponentialDistribution(Sky->MieExponentialDistribution * K);
+			Sky->SetRayleighScatteringScale(Sky->RayleighScatteringScale / K);
+			Sky->SetMieScatteringScale(Sky->MieScatteringScale / K);
+			Sky->SetMieAbsorptionScale(Sky->MieAbsorptionScale / K);
+			Sky->SetOtherAbsorptionScale(Sky->OtherAbsorptionScale / K);
+			Sky->OtherTentDistribution.TipAltitude *= K;
+			Sky->OtherTentDistribution.Width *= K;
+			Sky->SetAerialPespectiveViewDistanceScale(Sky->AerialPespectiveViewDistanceScale * K);
+		}
+		PlanetAtmosphereHeightKm = Sky->AtmosphereHeight;
 		Sky->MarkRenderStateDirty();
 	}
 	int32 Hidden = 0;
+	int32 Clouds = 0;
+	float CloudBottomKm = 0.0f, CloudHeightKm = 0.0f;
 	if (UWorld* World = GetWorld())
 	{
 		for (TActorIterator<AActor> It(World); It; ++It)
@@ -151,6 +219,15 @@ void ADayNightController::ApplyPlanetSky(const UWorldClockSubsystem& Clock)
 			{
 				It->SetActorHiddenInGame(true);
 				++Hidden;
+			}
+			// The cloud layers' altitudes are over the atmosphere's ground: scaled with it (WM-BP10).
+			UVolumetricCloudComponent* Cloud = (Sky && bScalePlanetSky) ? It->FindComponentByClass<UVolumetricCloudComponent>() : nullptr;
+			if (Cloud)
+			{
+				ComputePlanetCloudLayer(Cloud->LayerBottomAltitude, Cloud->LayerHeight, PlanetSkyScale, Clock.GetPlanetTerrainTop() / 100000.0f, CloudBottomKm, CloudHeightKm);
+				Cloud->SetLayerBottomAltitude(CloudBottomKm);
+				Cloud->SetLayerHeight(CloudHeightKm);
+				++Clouds;
 			}
 		}
 	}
@@ -162,9 +239,28 @@ void ADayNightController::ApplyPlanetSky(const UWorldClockSubsystem& Clock)
 			Fog->SetVisibility(false);
 		}
 	}
-	UE_LOG(LogWorldClock, Log, TEXT("DayNightController: planet sky: atmosphere %s at %s (ground %.3f km), %d Z-up sky actor(s) hidden, height fog %s."),
-		*GetNameSafe(SkyAtmosphereActor), *Clock.GetPlanetCenter().ToCompactString(), Clock.GetPlanetSeaRadius() / 100000.0f, Hidden,
-		HeightFog ? TEXT("hidden") : TEXT("none"));
+	UE_LOG(LogWorldClock, Log, TEXT("DayNightController: planet sky: atmosphere %s at %s (ground %.3f km, %.3f km high, scale %.4f of the authored), %d cloud layer(s) scaled (%.3f to %.3f km), %d Z-up sky actor(s) hidden, height fog %s."),
+		*GetNameSafe(SkyAtmosphereActor), *Clock.GetPlanetCenter().ToCompactString(), Clock.GetPlanetSeaRadius() / 100000.0f,
+		PlanetAtmosphereHeightKm, PlanetSkyScale, Clouds, CloudBottomKm, CloudBottomKm + CloudHeightKm, Hidden, HeightFog ? TEXT("hidden") : TEXT("none"));
+}
+
+void ADayNightController::ApplySpaceExposure(const UWorldClockSubsystem& Clock)
+{
+	if (!SpaceExposurePostProcess)
+	{
+		return;
+	}
+	FVector Camera;
+	const bool bActive = bPlanetSpaceExposure && PlanetAtmosphereHeightKm > 0.0f && GetCameraLocation(Camera);
+	SpaceExposureWeight = bActive
+		? ComputeSpaceExposureWeight(static_cast<float>((FVector::Dist(Camera, Clock.GetPlanetCenter()) - Clock.GetPlanetSeaRadius()) / 100000.0), PlanetAtmosphereHeightKm)
+		: 0.0f;
+	SpaceExposurePostProcess->bEnabled = SpaceExposureWeight > 0.0f;
+	SpaceExposurePostProcess->BlendWeight = SpaceExposureWeight;
+	SpaceExposurePostProcess->Settings.bOverride_AutoExposureLowPercent = true;
+	SpaceExposurePostProcess->Settings.AutoExposureLowPercent = SpaceExposureLowPercent;
+	SpaceExposurePostProcess->Settings.bOverride_AutoExposureHighPercent = true;
+	SpaceExposurePostProcess->Settings.AutoExposureHighPercent = FMath::Max(SpaceExposureHighPercent, SpaceExposureLowPercent);
 }
 
 void ADayNightController::CaptureAuthoredValues()
@@ -219,6 +315,7 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 	if (bPlanet)
 	{
 		ApplyPlanetSky(Clock);
+		ApplySpaceExposure(Clock);
 	}
 	const float Hour = bLocal ? Clock.GetLocalHour(Viewer) : Clock.GetHour();
 	const float Daylight = bLocal ? Clock.GetLocalDaylight(Viewer) : Clock.GetDaylight();
