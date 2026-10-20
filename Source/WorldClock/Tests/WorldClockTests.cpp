@@ -9,6 +9,7 @@
 #include "WorldClockTypes.h"
 #include "WorldClockSubsystem.h"
 #include "Components/SkyAtmosphereComponent.h"
+#include "Components/VolumetricCloudComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/World.h"
@@ -213,18 +214,29 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 		UWorldClockSubsystem* Clock = World->GetSubsystem<UWorldClockSubsystem>();
 		ASkyAtmosphere* SkyActor = World->SpawnActor<ASkyAtmosphere>();
 		AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>();
+		AVolumetricCloud* CloudActor = World->SpawnActor<AVolumetricCloud>();
+		UVolumetricCloudComponent* Cloud = CloudActor ? CloudActor->FindComponentByClass<UVolumetricCloudComponent>() : nullptr;
 		AActor* SkySphere = World->SpawnActor<AActor>();
 		SkySphere->Tags.Add(TEXT("WorldClock.ZUpSky"));
 		ADayNightController* Controller = World->SpawnActor<ADayNightController>();
 		USkyAtmosphereComponent* Sky = SkyActor ? SkyActor->FindComponentByClass<USkyAtmosphereComponent>() : nullptr;
-		if (TestNotNull(TEXT("A clock"), Clock) && TestNotNull(TEXT("A sky atmosphere"), Sky) && TestNotNull(TEXT("A controller"), Controller))
+		if (TestNotNull(TEXT("A clock"), Clock) && TestNotNull(TEXT("A sky atmosphere"), Sky) && TestNotNull(TEXT("A controller"), Controller)
+			&& TestNotNull(TEXT("A cloud layer"), Cloud))
 		{
+			const float CloudBottomBefore = Cloud->LayerBottomAltitude;
+			const float CloudHeightBefore = Cloud->LayerHeight;
 			const ESkyAtmosphereTransformMode ModeBefore = Sky->TransformMode;
 			const float BottomBefore = Sky->BottomRadius;
+			const float HeightBefore = Sky->AtmosphereHeight;
+			const float RayleighBefore = Sky->RayleighExponentialDistribution;
+			const float MieBefore = Sky->MieExponentialDistribution;
+			const float RayleighColumnBefore = Sky->RayleighExponentialDistribution * Sky->RayleighScatteringScale;
+			const float MieColumnBefore = Sky->MieExponentialDistribution * Sky->MieScatteringScale;
 			const FVector Centre(1000.0, -2000.0, 500.0);
 			if (bPlanet)
 			{
-				Clock->SetPlanetFrame(Centre, 249500.0f);
+				// The small review planet: the sea 500 under a 250,000 datum, terrain up to 6,500 over the sea.
+				Clock->SetPlanetFrame(Centre, 249500.0f, 6500.0f);
 			}
 			Controller->SkyAtmosphereActor = SkyActor;
 			Controller->HeightFog = Fog;
@@ -236,17 +248,82 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("Planet: the ground at the sea radius (km)"), FMath::IsNearlyEqual(Sky->BottomRadius, 2.495f, 1.0e-4f));
 				TestTrue(TEXT("Planet: the Z-up sky hidden"), SkySphere->IsHidden());
 				TestTrue(TEXT("Planet: the height fog hidden"), Fog->IsHidden());
+
+				// Scaled to the planet (spherical Phase 6, WM-BP10): 4 x 65 m over a 60 km authored height.
+				const float K = Controller->GetPlanetSkyScale();
+				AddInfo(FString::Printf(TEXT("Planet sky scale %.5f: atmosphere %.4f km (authored %.1f), Rayleigh %.5f km, Mie %.6f km"),
+					K, Sky->AtmosphereHeight, HeightBefore, Sky->RayleighExponentialDistribution, Sky->MieExponentialDistribution));
+				TestTrue(TEXT("Planet: the scale keeps the atmosphere four times the terrain"), FMath::IsNearlyEqual(K, 4.0f * 0.065f / HeightBefore, 1.0e-4f));
+				TestTrue(TEXT("Planet: the atmosphere's height scaled"), FMath::IsNearlyEqual(Sky->AtmosphereHeight, HeightBefore * K, 1.0e-4f));
+				TestTrue(TEXT("Planet: the Rayleigh and Mie scale heights scaled"),
+					FMath::IsNearlyEqual(Sky->RayleighExponentialDistribution, RayleighBefore * K, 1.0e-5f) && FMath::IsNearlyEqual(Sky->MieExponentialDistribution, MieBefore * K, 1.0e-6f));
+				TestTrue(TEXT("Planet: a column of air holds what the authored one holds"),
+					FMath::IsNearlyEqual(Sky->RayleighExponentialDistribution * Sky->RayleighScatteringScale, RayleighColumnBefore, 1.0e-4f * RayleighColumnBefore)
+					&& FMath::IsNearlyEqual(Sky->MieExponentialDistribution * Sky->MieScatteringScale, MieColumnBefore, 1.0e-4f * MieColumnBefore));
+
+				// The cloud layer with it: its thickness by K, its floor over the highest terrain, inside the atmosphere.
+				AddInfo(FString::Printf(TEXT("Planet clouds %.4f to %.4f km (authored %.1f to %.1f)"), Cloud->LayerBottomAltitude,
+					Cloud->LayerBottomAltitude + Cloud->LayerHeight, CloudBottomBefore, CloudBottomBefore + CloudHeightBefore));
+				TestTrue(TEXT("Planet: the cloud layer's thickness scaled"), FMath::IsNearlyEqual(Cloud->LayerHeight, CloudHeightBefore * K, 1.0e-5f));
+				TestTrue(TEXT("Planet: the cloud layer's floor over the highest terrain"), Cloud->LayerBottomAltitude >= 0.065f - 1.0e-6f);
+				TestTrue(TEXT("Planet: the cloud layer inside the atmosphere"), Cloud->LayerBottomAltitude + Cloud->LayerHeight <= Sky->AtmosphereHeight);
 			}
 			else
 			{
 				TestTrue(TEXT("Plane: the atmosphere untouched"), Sky->TransformMode == ModeBefore && Sky->BottomRadius == BottomBefore);
 				TestFalse(TEXT("Plane: the sky shown"), SkySphere->IsHidden());
 				TestFalse(TEXT("Plane: the fog shown"), Fog->IsHidden());
+				TestTrue(TEXT("Plane: the clouds untouched"), Cloud->LayerBottomAltitude == CloudBottomBefore && Cloud->LayerHeight == CloudHeightBefore);
 			}
 		}
 		GEngine->DestroyWorldContext(World);
 		World->DestroyWorld(false);
 	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Spherical Phase 6, WM-BP10: the planet sky's scale and the space exposure. The scale is the planet's radius over Earth's
+// unless the terrain needs more air (four times its top), at most 1; the space exposure fades in from half the
+// atmosphere's height to one and a half.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWorldClockPlanetSkyScaleTest, "WorldClock.Planet.SkyScale", WORLDCLOCK_TEST_FLAGS)
+bool FWorldClockPlanetSkyScaleTest::RunTest(const FString& Parameters)
+{
+	// Review_Planet_L: R 1,000 km, the sea 833 m under the datum, terrain to 7.6 km over the datum: the terrain decides.
+	const float L = ADayNightController::ComputePlanetSkyScale(999.17f, 8.45f, 60.0f, 4.0f);
+	// Review_Planet_M: R 50 km, terrain to 2.2 km over the sea.
+	const float M = ADayNightController::ComputePlanetSkyScale(49.75f, 2.43f, 60.0f, 4.0f);
+	// A planet of Earth's size with low relief: the radius decides.
+	const float Earthlike = ADayNightController::ComputePlanetSkyScale(6000.0f, 1.0f, 60.0f, 4.0f);
+	// Bigger than Earth: never more than the authored atmosphere.
+	const float Giant = ADayNightController::ComputePlanetSkyScale(20000.0f, 1.0f, 60.0f, 4.0f);
+	AddInfo(FString::Printf(TEXT("Sky scale: L %.4f (%.1f km of air), M %.4f (%.1f km), Earth-like %.4f, giant %.4f"), L, 60.0f * L, M, 60.0f * M, Earthlike, Giant));
+	TestTrue(TEXT("L: the terrain decides"), FMath::IsNearlyEqual(L, 4.0f * 8.45f / 60.0f, 1.0e-5f));
+	TestTrue(TEXT("M: the terrain decides"), FMath::IsNearlyEqual(M, 4.0f * 2.43f / 60.0f, 1.0e-5f));
+	TestTrue(TEXT("Earth-like: the radius decides"), FMath::IsNearlyEqual(Earthlike, 6000.0f / 6360.0f, 1.0e-5f));
+	TestEqual(TEXT("Giant: at most the authored atmosphere"), Giant, 1.0f);
+	TestTrue(TEXT("Unknown terrain: the radius"), FMath::IsNearlyEqual(ADayNightController::ComputePlanetSkyScale(50.0f, 0.0f, 60.0f, 4.0f), 50.0f / 6360.0f, 1.0e-6f));
+
+	// The cloud layer (the engine's 5 km floor, 10 km thick) with the sky: over the highest terrain, inside the air.
+	float Bottom = 0.0f, Height = 0.0f;
+	ADayNightController::ComputePlanetCloudLayer(5.0f, 10.0f, L, 8.45f, Bottom, Height);
+	AddInfo(FString::Printf(TEXT("Clouds: L %.2f to %.2f km"), Bottom, Bottom + Height));
+	TestTrue(TEXT("L clouds: the floor at the highest terrain"), FMath::IsNearlyEqual(Bottom, 8.45f, 1.0e-5f));
+	TestTrue(TEXT("L clouds: inside the air"), Bottom + Height <= 60.0f * L);
+	ADayNightController::ComputePlanetCloudLayer(5.0f, 10.0f, M, 2.43f, Bottom, Height);
+	AddInfo(FString::Printf(TEXT("Clouds: M %.2f to %.2f km"), Bottom, Bottom + Height));
+	TestTrue(TEXT("M clouds: the floor at the highest terrain"), FMath::IsNearlyEqual(Bottom, 2.43f, 1.0e-5f));
+	TestTrue(TEXT("M clouds: the thickness scaled"), FMath::IsNearlyEqual(Height, 10.0f * M, 1.0e-5f));
+	TestTrue(TEXT("M clouds: inside the air"), Bottom + Height <= 60.0f * M);
+	ADayNightController::ComputePlanetCloudLayer(5.0f, 10.0f, Earthlike, 1.0f, Bottom, Height);
+	TestTrue(TEXT("Earth-like clouds: the authored layer scaled"), FMath::IsNearlyEqual(Bottom, 5.0f * Earthlike, 1.0e-4f) && FMath::IsNearlyEqual(Height, 10.0f * Earthlike, 1.0e-4f));
+
+	TestEqual(TEXT("Space exposure: none on the ground"), ADayNightController::ComputeSpaceExposureWeight(0.0f, 30.0f), 0.0f);
+	TestEqual(TEXT("Space exposure: none in the lower half of the air"), ADayNightController::ComputeSpaceExposureWeight(15.0f, 30.0f), 0.0f);
+	TestTrue(TEXT("Space exposure: partly at the top of the air"), FMath::IsNearlyEqual(ADayNightController::ComputeSpaceExposureWeight(30.0f, 30.0f), 0.5f, 1.0e-6f));
+	TestEqual(TEXT("Space exposure: whole in space"), ADayNightController::ComputeSpaceExposureWeight(45.0f, 30.0f), 1.0f);
+	TestEqual(TEXT("Space exposure: none without an atmosphere"), ADayNightController::ComputeSpaceExposureWeight(1000.0f, 0.0f), 0.0f);
 	return true;
 }
 

@@ -184,13 +184,14 @@ FRotator UWorldClockSubsystem::GetSunRotation() const
 	return UWorldClockMath::SunRotationForHour(GetHour(), S->SunriseHour, S->SunsetHour, S->SunAzimuthDegrees);
 }
 
-void UWorldClockSubsystem::SetPlanetFrame(const FVector& Center, float SeaRadius)
+void UWorldClockSubsystem::SetPlanetFrame(const FVector& Center, float SeaRadius, float TerrainTop)
 {
 	bPlanetFrame = true;
 	PlanetCenter = Center;
 	PlanetSeaRadius = SeaRadius;
-	UE_LOG(LogWorldClock, Log, TEXT("WorldClock: planet frame at %s (sea radius %.0f): a world-fixed sun, local solar time by longitude."),
-		*Center.ToCompactString(), SeaRadius);
+	PlanetTerrainTop = FMath::Max(TerrainTop, 0.0f);
+	UE_LOG(LogWorldClock, Log, TEXT("WorldClock: planet frame at %s (sea radius %.0f, terrain up to %.0f over it): a world-fixed sun, local solar time by longitude."),
+		*Center.ToCompactString(), SeaRadius, PlanetTerrainTop);
 }
 
 void UWorldClockSubsystem::ClearPlanetFrame()

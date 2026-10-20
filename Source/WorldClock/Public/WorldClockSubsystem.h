@@ -80,9 +80,11 @@ public:
 	 * Give the clock a planet (a game-side bridge calls this once the voxel world reports a shell).
 	 * @param Center Planet centre
 	 * @param SeaRadius The sea's radius (the datum without water): the sky's ground
+	 * @param TerrainTop The highest the terrain reaches over the sea radius (uu; 0 = unknown): the sky, scaled to the
+	 *        planet (ADayNightController, spherical Phase 6), keeps its atmosphere well above it
 	 */
 	UFUNCTION(BlueprintCallable, Category = "WorldClock|Planet")
-	void SetPlanetFrame(const FVector& Center, float SeaRadius);
+	void SetPlanetFrame(const FVector& Center, float SeaRadius, float TerrainTop = 0.0f);
 
 	/** Back to the one-frame clock. */
 	UFUNCTION(BlueprintCallable, Category = "WorldClock|Planet")
@@ -96,6 +98,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "WorldClock|Planet")
 	float GetPlanetSeaRadius() const { return PlanetSeaRadius; }
+
+	/** The highest the terrain reaches over the sea radius (uu; 0 = unknown). */
+	UFUNCTION(BlueprintPure, Category = "WorldClock|Planet")
+	float GetPlanetTerrainTop() const { return PlanetTerrainTop; }
 
 	/** The local solar hour at a position (0 .. 24); GetHour without a planet frame. */
 	UFUNCTION(BlueprintPure, Category = "WorldClock|Planet")
@@ -193,6 +199,7 @@ protected:
 	bool bPlanetFrame = false;
 	FVector PlanetCenter = FVector::ZeroVector;
 	float PlanetSeaRadius = 0.0f;
+	float PlanetTerrainTop = 0.0f;
 
 	// Edge tracking for delegates (every machine).
 	int32 LastHour = -1;
