@@ -22,6 +22,16 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<int32> CVarWorldClockPlanetSkyLightAtViewer(
+	TEXT("wc.Planet.SkyLightAtViewer"),
+	1,
+	TEXT("On a planet, the sky light's real-time capture follows the camera (visual polish VP1-O5,\n")
+	TEXT("ADayNightController::bPlanetSkyLightAtViewer):\n")
+	TEXT("  1 = at the camera, its lower hemisphere from the captured sky (default)\n")
+	TEXT("  0 = where the map put it, as before (at the planet's centre it captures from inside the planet: no sky light)"),
+	ECVF_Default);
 
 namespace
 {
@@ -263,6 +273,54 @@ void ADayNightController::ApplySpaceExposure(const UWorldClockSubsystem& Clock)
 	SpaceExposurePostProcess->Settings.AutoExposureHighPercent = FMath::Max(SpaceExposureHighPercent, SpaceExposureLowPercent);
 }
 
+void ADayNightController::ApplyPlanetSkyLight(const FVector* Viewer)
+{
+	USkyLightComponent* Comp = SkyLight ? SkyLight->GetLightComponent() : nullptr;
+	if (!Comp)
+	{
+		return;
+	}
+	const bool bEnabled = bPlanetSkyLightAtViewer && CVarWorldClockPlanetSkyLightAtViewer.GetValueOnGameThread() != 0;
+	const bool bMovable = Comp->Mobility == EComponentMobility::Movable;
+	UE_CLOG(bEnabled && !bMovable && !bWarnedSkyLightNotMovable, LogWorldClock, Warning,
+		TEXT("DayNightController: the sky light %s is not movable, so it cannot follow the viewer on a planet."), *GetNameSafe(SkyLight));
+	bWarnedSkyLightNotMovable |= bEnabled && !bMovable;
+
+	if (bEnabled && bMovable && Viewer)
+	{
+		if (!bSkyLightAtViewerApplied)
+		{
+			bSkyLightAtViewerApplied = true;
+			AuthoredSkyLightLocation = SkyLight->GetActorLocation();
+			bAuthoredLowerHemisphereIsBlack = Comp->bLowerHemisphereIsBlack;
+			// "Lower" is world -Z: on a planet that can be half the sky. The atmosphere draws the planet's ground under the
+			// local horizon, so the captured sky serves the whole sphere.
+			if (Comp->bLowerHemisphereIsBlack)
+			{
+				Comp->bLowerHemisphereIsBlack = false;
+				Comp->MarkRenderStateDirty();
+			}
+			UE_LOG(LogWorldClock, Log, TEXT("DayNightController: planet sky light %s follows the camera (it was at %s)."),
+				*GetNameSafe(SkyLight), *AuthoredSkyLightLocation.ToCompactString());
+		}
+		if (!SkyLight->GetActorLocation().Equals(*Viewer, 1.0))
+		{
+			SkyLight->SetActorLocation(*Viewer);
+		}
+	}
+	else if (bSkyLightAtViewerApplied && !bEnabled)
+	{
+		bSkyLightAtViewerApplied = false;
+		SkyLight->SetActorLocation(AuthoredSkyLightLocation);
+		if (Comp->bLowerHemisphereIsBlack != bAuthoredLowerHemisphereIsBlack)
+		{
+			Comp->bLowerHemisphereIsBlack = bAuthoredLowerHemisphereIsBlack;
+			Comp->MarkRenderStateDirty();
+		}
+		UE_LOG(LogWorldClock, Log, TEXT("DayNightController: planet sky light %s back at %s."), *GetNameSafe(SkyLight), *AuthoredSkyLightLocation.ToCompactString());
+	}
+}
+
 void ADayNightController::CaptureAuthoredValues()
 {
 	if (bCaptured)
@@ -316,6 +374,8 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 	{
 		ApplyPlanetSky(Clock);
 		ApplySpaceExposure(Clock);
+		FVector Camera;
+		ApplyPlanetSkyLight(GetCameraLocation(Camera) ? &Camera : nullptr);
 	}
 	const float Hour = bLocal ? Clock.GetLocalHour(Viewer) : Clock.GetHour();
 	const float Daylight = bLocal ? Clock.GetLocalDaylight(Viewer) : Clock.GetDaylight();

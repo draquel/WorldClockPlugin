@@ -98,6 +98,28 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "DayNight|Planet")
 	TObjectPtr<UPostProcessComponent> SpaceExposurePostProcess;
 
+	/**
+	 * With a planet frame, the sky light follows the camera (visual polish VP1-O5). A real-time capture is taken from the
+	 * sky light's own position, and one left at the planet's centre (where a map's sky light usually sits) sees the sky
+	 * from inside the planet: no sky light anywhere, every shadow black. Its lower hemisphere is taken from the captured
+	 * sky too: "lower" is world -Z, which on a planet can be half the sky, and the atmosphere already draws the planet's
+	 * ground under the local horizon. The sky light must be movable. The cvar wc.Planet.SkyLightAtViewer 0 turns it off
+	 * (the sky light goes back where the map put it).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
+	bool bPlanetSkyLightAtViewer = true;
+
+	/**
+	 * Place the sky light for a viewer on a planet (bPlanetSkyLightAtViewer, wc.Planet.SkyLightAtViewer), or put it back
+	 * where the map put it when that is off. Called every tick on a planet with the camera's location.
+	 * @param Viewer The camera's location, or null when there is no camera
+	 */
+	void ApplyPlanetSkyLight(const FVector* Viewer);
+
+	/** Whether the sky light is following the viewer (as last applied). */
+	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
+	bool IsSkyLightAtViewer() const { return bSkyLightAtViewerApplied; }
+
 	/** The atmosphere's scale on a planet (1 = as authored; set once the planet sky is applied). */
 	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
 	float GetPlanetSkyScale() const { return PlanetSkyScale; }
@@ -216,6 +238,12 @@ protected:
 	float PlanetSkyScale = 1.0f;
 	float PlanetAtmosphereHeightKm = 0.0f;
 	float SpaceExposureWeight = 0.0f;
+
+	/** The sky light following the viewer (ApplyPlanetSkyLight), and what to put back when it stops */
+	bool bSkyLightAtViewerApplied = false;
+	bool bWarnedSkyLightNotMovable = false;
+	FVector AuthoredSkyLightLocation = FVector::ZeroVector;
+	bool bAuthoredLowerHemisphereIsBlack = true;
 
 	void FindTargets();
 	void CaptureAuthoredValues();

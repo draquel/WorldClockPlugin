@@ -9,9 +9,12 @@
 #include "WorldClockTypes.h"
 #include "WorldClockSubsystem.h"
 #include "Components/SkyAtmosphereComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/VolumetricCloudComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkyLight.h"
+#include "HAL/IConsoleManager.h"
 #include "Engine/World.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -218,6 +221,8 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 		UVolumetricCloudComponent* Cloud = CloudActor ? CloudActor->FindComponentByClass<UVolumetricCloudComponent>() : nullptr;
 		AActor* SkySphere = World->SpawnActor<AActor>();
 		SkySphere->Tags.Add(TEXT("WorldClock.ZUpSky"));
+		ASkyLight* SkyLightActor = World->SpawnActor<ASkyLight>();
+		USkyLightComponent* SkyLightComp = SkyLightActor ? SkyLightActor->GetLightComponent() : nullptr;
 		ADayNightController* Controller = World->SpawnActor<ADayNightController>();
 		USkyAtmosphereComponent* Sky = SkyActor ? SkyActor->FindComponentByClass<USkyAtmosphereComponent>() : nullptr;
 		if (TestNotNull(TEXT("A clock"), Clock) && TestNotNull(TEXT("A sky atmosphere"), Sky) && TestNotNull(TEXT("A controller"), Controller)
@@ -238,8 +243,16 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				// The small review planet: the sea 500 under a 250,000 datum, terrain up to 6,500 over the sea.
 				Clock->SetPlanetFrame(Centre, 249500.0f, 6500.0f);
 			}
+			// A movable sky light at the planet's centre, its lower hemisphere black (PlanetTest's)
+			if (SkyLightComp)
+			{
+				SkyLightComp->SetMobility(EComponentMobility::Movable);
+				SkyLightComp->bLowerHemisphereIsBlack = true;
+				SkyLightActor->SetActorLocation(Centre);
+			}
 			Controller->SkyAtmosphereActor = SkyActor;
 			Controller->HeightFog = Fog;
+			Controller->SkyLight = SkyLightActor;
 			Controller->Tick(0.0f);
 			if (bPlanet)
 			{
@@ -267,6 +280,26 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("Planet: the cloud layer's thickness scaled"), FMath::IsNearlyEqual(Cloud->LayerHeight, CloudHeightBefore * K, 1.0e-5f));
 				TestTrue(TEXT("Planet: the cloud layer's floor over the highest terrain"), Cloud->LayerBottomAltitude >= 0.065f - 1.0e-6f);
 				TestTrue(TEXT("Planet: the cloud layer inside the atmosphere"), Cloud->LayerBottomAltitude + Cloud->LayerHeight <= Sky->AtmosphereHeight);
+
+				// The sky light follows the viewer (visual polish VP1-O5): without one it stays put; with one it moves there
+				// and takes its lower hemisphere from the captured sky; wc.Planet.SkyLightAtViewer 0 puts both back.
+				if (TestNotNull(TEXT("A sky light"), SkyLightComp))
+				{
+					TestTrue(TEXT("Planet sky light: no viewer, no move"), SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && !Controller->IsSkyLightAtViewer());
+					const FVector Viewer = Centre + FVector(0.6, 0.0, 0.8) * 250180.0;
+					Controller->ApplyPlanetSkyLight(&Viewer);
+					TestTrue(TEXT("Planet sky light: at the viewer"), SkyLightActor->GetActorLocation().Equals(Viewer, 1.0) && Controller->IsSkyLightAtViewer());
+					TestFalse(TEXT("Planet sky light: the lower hemisphere from the captured sky"), SkyLightComp->bLowerHemisphereIsBlack);
+					IConsoleVariable* AtViewer = IConsoleManager::Get().FindConsoleVariable(TEXT("wc.Planet.SkyLightAtViewer"));
+					if (TestNotNull(TEXT("wc.Planet.SkyLightAtViewer"), AtViewer))
+					{
+						AtViewer->Set(0, ECVF_SetByCode);
+						Controller->ApplyPlanetSkyLight(&Viewer);
+						TestTrue(TEXT("Planet sky light off: back where the map put it"), SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && !Controller->IsSkyLightAtViewer());
+						TestTrue(TEXT("Planet sky light off: its lower hemisphere black again"), SkyLightComp->bLowerHemisphereIsBlack);
+						AtViewer->Set(1, ECVF_SetByCode);
+					}
+				}
 			}
 			else
 			{
@@ -274,6 +307,7 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				TestFalse(TEXT("Plane: the sky shown"), SkySphere->IsHidden());
 				TestFalse(TEXT("Plane: the fog shown"), Fog->IsHidden());
 				TestTrue(TEXT("Plane: the clouds untouched"), Cloud->LayerBottomAltitude == CloudBottomBefore && Cloud->LayerHeight == CloudHeightBefore);
+				TestTrue(TEXT("Plane: the sky light untouched"), !SkyLightComp || (SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && SkyLightComp->bLowerHemisphereIsBlack));
 			}
 		}
 		GEngine->DestroyWorldContext(World);
