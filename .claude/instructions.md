@@ -37,7 +37,10 @@
   `SetLocalTimeOfDay`; without a frame every `Local*` is the global value. The controller's light curves read
   `DaylightForElevation` at the viewer (equal to `DaylightForHour` on the equator with sunrise 6 / sunset 18); it
   centres the SkyAtmosphere on the planet (`PlanetCenterAtComponentTransform`, bottom radius the sea radius in km) and
-  hides the height fog and actors tagged `WorldClock.ZUpSky`. The widget shows the local day, time and phase.
+  hides the height fog and actors tagged `WorldClock.ZUpSky`. The sky light follows the camera on a planet
+  (`bPlanetSkyLightAtViewer`, `wc.Planet.SkyLightAtViewer`; its real-time capture is taken where it stands, and a map's
+  sky light at the planet's centre captured nothing), with its lower hemisphere from the captured sky. The widget shows
+  the local day, time and phase.
 - `FWorldClockSaveState` + `ExportState` / `ImportState` for a save system.
 
 ## Rules

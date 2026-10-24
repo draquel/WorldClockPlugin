@@ -161,3 +161,20 @@ the sea) meters the histogram on the brightest part of the view (`SpaceExposureL
 98) instead of a frame mostly black space, so the sunlit planet keeps its daylight exposure from orbit.
 
 Tests: `WorldClock.Planet.Sky` (the scaled heights, the column of air and the cloud layer), `WorldClock.Planet.SkyScale`.
+
+### The sky light at the viewer (VoxelWorlds visual polish VP1-O5, 2026-10-24)
+
+A sky light's real-time capture is taken from the sky light's own position (`USkyLightComponent::SendRenderTransform`
+sets `CapturePosition`), and PlanetTest's sat at the planet's centre: the capture saw the sky from inside the planet, so
+there was no sky light anywhere and every shadow was black. With a planet frame the controller now moves the sky light to
+the camera every tick (`bPlanetSkyLightAtViewer`, `ApplyPlanetSkyLight`; it must be movable, which real-time capture
+needs anyway) and turns its lower hemisphere solid colour off: "lower" is world −Z, which on a planet can be half the
+sky, and the atmosphere already draws the planet's ground under the local horizon. `wc.Planet.SkyLightAtViewer 0` puts
+the sky light back where the map put it, with its own lower hemisphere setting.
+
+On PlanetTest at 45°N 20°E, 16:50 local: ground in a hill's shadow from luma 0.0 to 69.1 seen from above (sunlit
+124 → 198), a shadowed foreground at eye level from black to sky-lit (`VISUAL_POLISH_PLAN.md` in VoxelWorlds). At the
+equator in a forest (the sky light moved by hand in PIE, before the code) the darkest fifth of the ground 27.7 → 39.5
+(35.1 with the position alone, the rest from the lower hemisphere). Walking 150 uu steps the frame changes as much with the sky light following as without (ground 30.2 against
+30.5 a step). Test: `WorldClock.Planet.Sky` (no viewer, no move; at the viewer with the whole sphere; the cvar at 0 puts
+both back; a plane untouched).
