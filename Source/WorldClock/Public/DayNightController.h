@@ -120,6 +120,41 @@ public:
 	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
 	bool IsSkyLightAtViewer() const { return bSkyLightAtViewerApplied; }
 
+	/**
+	 * With a planet frame, the sun casts no shadows onto the atmosphere while the scaled air near the ground is more than
+	 * PlanetAtmosphereShadowMaxDensity times as dense as the authored (visual polish VP1-O6, the "pixelated clouds"). The
+	 * scaled sky (bScalePlanetSky) packs a column of air into a layer GetPlanetSkyScale as thick, so the air within the sun's
+	 * shadow cascades, a few hundred metres of it, is 1 / scale times as dense as Earth's (230 times on a 2.5 km planet).
+	 * The terrain's and the trees' shadows in it then darken the sky strongly, and the engine draws them through its
+	 * low-resolution sky view LUT (oriented with the camera) from a few shadow samples per ray: jagged dark patches that
+	 * move and change with the camera. The cvar wc.Planet.AtmosphereShadows 0 keeps the light's own setting.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
+	bool bLimitPlanetAtmosphereShadows = true;
+
+	/** The densest scaled air (times the authored, 1 / GetPlanetSkyScale) the sun still casts shadows onto (bLimitPlanetAtmosphereShadows). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet", meta = (ClampMin = "1.0"))
+	float PlanetAtmosphereShadowMaxDensity = 2.0f;
+
+	/**
+	 * Set the sun's shadows on the atmosphere for a planet (bLimitPlanetAtmosphereShadows, wc.Planet.AtmosphereShadows):
+	 * the light's own setting, off while the scaled air is too dense. Called every tick on a planet once the sky is scaled.
+	 */
+	void ApplyPlanetAtmosphereShadows();
+
+	/** Whether the sun's shadows on the atmosphere are turned off for the planet's dense air (as last applied). */
+	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
+	bool AreAtmosphereShadowsLimited() const { return bAtmosphereShadowsLimited; }
+
+	/**
+	 * Pure: whether the sun may cast shadows onto a planet's scaled atmosphere: its air near the ground, 1 / SkyScale times
+	 * as dense as the authored, at most MaxDensity times.
+	 * @param SkyScale GetPlanetSkyScale (1 = the authored atmosphere)
+	 * @param MaxDensity PlanetAtmosphereShadowMaxDensity
+	 * @return True when the shadows may stay
+	 */
+	static bool ShouldShadowPlanetAtmosphere(float SkyScale, float MaxDensity);
+
 	/** The atmosphere's scale on a planet (1 = as authored; set once the planet sky is applied). */
 	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
 	float GetPlanetSkyScale() const { return PlanetSkyScale; }
@@ -244,6 +279,11 @@ protected:
 	bool bWarnedSkyLightNotMovable = false;
 	FVector AuthoredSkyLightLocation = FVector::ZeroVector;
 	bool bAuthoredLowerHemisphereIsBlack = true;
+
+	/** The sun's shadows on the atmosphere (ApplyPlanetAtmosphereShadows): the light's own setting, read the first time */
+	bool bAtmosphereShadowsLimited = false;
+	bool bAuthoredAtmosphereShadowsCaptured = false;
+	bool bAuthoredCastShadowsOnAtmosphere = false;
 
 	void FindTargets();
 	void CaptureAuthoredValues();

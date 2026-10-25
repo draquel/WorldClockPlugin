@@ -33,6 +33,15 @@ static TAutoConsoleVariable<int32> CVarWorldClockPlanetSkyLightAtViewer(
 	TEXT("  0 = where the map put it, as before (at the planet's centre it captures from inside the planet: no sky light)"),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarWorldClockPlanetAtmosphereShadows(
+	TEXT("wc.Planet.AtmosphereShadows"),
+	1,
+	TEXT("On a planet, the sun's shadows on the atmosphere (visual polish VP1-O6, ADayNightController::bLimitPlanetAtmosphereShadows):\n")
+	TEXT("  1 = off while the scaled air is denser than PlanetAtmosphereShadowMaxDensity times the authored (default; on a small\n")
+	TEXT("      planet the shadows show as jagged dark patches in the sky that move with the camera)\n")
+	TEXT("  0 = the light's own setting, as before"),
+	ECVF_Default);
+
 namespace
 {
 	void SetCurve(FRuntimeFloatCurve& Curve, std::initializer_list<TPair<float, float>> Keys)
@@ -148,6 +157,12 @@ void ADayNightController::ComputePlanetCloudLayer(float AuthoredBottomKm, float 
 	const float K = FMath::Clamp(SkyScale, 1.0e-4f, 1.0f);
 	OutBottomKm = FMath::Max(FMath::Max(AuthoredBottomKm, 0.0f) * K, FMath::Max(TerrainTopKm, 0.0f));
 	OutHeightKm = FMath::Max(AuthoredHeightKm, 0.0f) * K;
+}
+
+bool ADayNightController::ShouldShadowPlanetAtmosphere(float SkyScale, float MaxDensity)
+{
+	// The scattering is divided by the scale, so the air near the ground is 1 / scale times as dense as the authored.
+	return SkyScale * FMath::Max(MaxDensity, 1.0f) >= 1.0f;
 }
 
 float ADayNightController::ComputeSpaceExposureWeight(float AltitudeKm, float AtmosphereHeightKm)
@@ -321,6 +336,32 @@ void ADayNightController::ApplyPlanetSkyLight(const FVector* Viewer)
 	}
 }
 
+void ADayNightController::ApplyPlanetAtmosphereShadows()
+{
+	UDirectionalLightComponent* Comp = SunLight ? Cast<UDirectionalLightComponent>(SunLight->GetLightComponent()) : nullptr;
+	if (!Comp)
+	{
+		return;
+	}
+	if (!bAuthoredAtmosphereShadowsCaptured)
+	{
+		bAuthoredAtmosphereShadowsCaptured = true;
+		bAuthoredCastShadowsOnAtmosphere = Comp->bCastShadowsOnAtmosphere;
+	}
+	const bool bLimit = bLimitPlanetAtmosphereShadows && CVarWorldClockPlanetAtmosphereShadows.GetValueOnGameThread() != 0;
+	const bool bWanted = bAuthoredCastShadowsOnAtmosphere && (!bLimit || ShouldShadowPlanetAtmosphere(PlanetSkyScale, PlanetAtmosphereShadowMaxDensity));
+	bAtmosphereShadowsLimited = bAuthoredCastShadowsOnAtmosphere && !bWanted;
+	if (Comp->bCastShadowsOnAtmosphere != bWanted)
+	{
+		// No setter: the proxy copies the flag when it is created.
+		Comp->bCastShadowsOnAtmosphere = bWanted;
+		Comp->MarkRenderStateDirty();
+		UE_LOG(LogWorldClock, Log, TEXT("DayNightController: the sun %s shadows on the atmosphere (the planet's scaled air %.0f times as dense as authored near the ground, the limit %.1f; wc.Planet.AtmosphereShadows %d)."),
+			bWanted ? TEXT("casts") : TEXT("casts no"), 1.0f / FMath::Max(PlanetSkyScale, 1.0e-4f), PlanetAtmosphereShadowMaxDensity,
+			CVarWorldClockPlanetAtmosphereShadows.GetValueOnGameThread());
+	}
+}
+
 void ADayNightController::CaptureAuthoredValues()
 {
 	if (bCaptured)
@@ -374,6 +415,7 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 	if (bPlanet)
 	{
 		ApplyPlanetSky(Clock);
+		ApplyPlanetAtmosphereShadows();
 		ApplySpaceExposure(Clock);
 		FVector Camera;
 		ApplyPlanetSkyLight(GetCameraLocation(Camera) ? &Camera : nullptr);
