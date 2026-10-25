@@ -8,9 +8,11 @@
 #include "WorldClockTags.h"
 #include "WorldClockTypes.h"
 #include "WorldClockSubsystem.h"
+#include "Components/DirectionalLightComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/VolumetricCloudComponent.h"
+#include "Engine/DirectionalLight.h"
 #include "Engine/Engine.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
@@ -223,6 +225,13 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 		SkySphere->Tags.Add(TEXT("WorldClock.ZUpSky"));
 		ASkyLight* SkyLightActor = World->SpawnActor<ASkyLight>();
 		USkyLightComponent* SkyLightComp = SkyLightActor ? SkyLightActor->GetLightComponent() : nullptr;
+		// The sun casting shadows on the atmosphere (PlanetTest's)
+		ADirectionalLight* SunActor = World->SpawnActor<ADirectionalLight>();
+		UDirectionalLightComponent* SunComp = SunActor ? Cast<UDirectionalLightComponent>(SunActor->GetLightComponent()) : nullptr;
+		if (SunComp)
+		{
+			SunComp->bCastShadowsOnAtmosphere = true;
+		}
 		ADayNightController* Controller = World->SpawnActor<ADayNightController>();
 		USkyAtmosphereComponent* Sky = SkyActor ? SkyActor->FindComponentByClass<USkyAtmosphereComponent>() : nullptr;
 		if (TestNotNull(TEXT("A clock"), Clock) && TestNotNull(TEXT("A sky atmosphere"), Sky) && TestNotNull(TEXT("A controller"), Controller)
@@ -253,6 +262,7 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 			Controller->SkyAtmosphereActor = SkyActor;
 			Controller->HeightFog = Fog;
 			Controller->SkyLight = SkyLightActor;
+			Controller->SunLight = SunActor;
 			Controller->Tick(0.0f);
 			if (bPlanet)
 			{
@@ -300,6 +310,28 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 						AtViewer->Set(1, ECVF_SetByCode);
 					}
 				}
+
+				// The sun's shadows on the atmosphere (visual polish VP1-O6): off in the small planet's dense scaled air;
+				// wc.Planet.AtmosphereShadows 0 gives the light its own setting back, 1 takes it again.
+				if (TestNotNull(TEXT("A sun"), SunComp))
+				{
+					TestFalse(TEXT("Planet sun: no shadows on the dense scaled atmosphere"), SunComp->bCastShadowsOnAtmosphere);
+					TestTrue(TEXT("Planet sun: reported as limited"), Controller->AreAtmosphereShadowsLimited());
+					IConsoleVariable* AtmosphereShadows = IConsoleManager::Get().FindConsoleVariable(TEXT("wc.Planet.AtmosphereShadows"));
+					if (TestNotNull(TEXT("wc.Planet.AtmosphereShadows"), AtmosphereShadows))
+					{
+						AtmosphereShadows->Set(0, ECVF_SetByCode);
+						Controller->Tick(0.0f);
+						TestTrue(TEXT("Planet sun, cvar 0: the light's own shadows on the atmosphere"), SunComp->bCastShadowsOnAtmosphere && !Controller->AreAtmosphereShadowsLimited());
+						AtmosphereShadows->Set(1, ECVF_SetByCode);
+						Controller->Tick(0.0f);
+						TestFalse(TEXT("Planet sun, cvar 1: off again"), SunComp->bCastShadowsOnAtmosphere);
+					}
+					// A limit above the air's density keeps them
+					Controller->PlanetAtmosphereShadowMaxDensity = 1.0f / Controller->GetPlanetSkyScale() + 1.0f;
+					Controller->Tick(0.0f);
+					TestTrue(TEXT("Planet sun: kept under a higher limit"), SunComp->bCastShadowsOnAtmosphere);
+				}
 			}
 			else
 			{
@@ -308,6 +340,7 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				TestFalse(TEXT("Plane: the fog shown"), Fog->IsHidden());
 				TestTrue(TEXT("Plane: the clouds untouched"), Cloud->LayerBottomAltitude == CloudBottomBefore && Cloud->LayerHeight == CloudHeightBefore);
 				TestTrue(TEXT("Plane: the sky light untouched"), !SkyLightComp || (SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && SkyLightComp->bLowerHemisphereIsBlack));
+				TestTrue(TEXT("Plane: the sun's shadows on the atmosphere untouched"), !SunComp || SunComp->bCastShadowsOnAtmosphere);
 			}
 		}
 		GEngine->DestroyWorldContext(World);
@@ -358,6 +391,17 @@ bool FWorldClockPlanetSkyScaleTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Space exposure: partly at the top of the air"), FMath::IsNearlyEqual(ADayNightController::ComputeSpaceExposureWeight(30.0f, 30.0f), 0.5f, 1.0e-6f));
 	TestEqual(TEXT("Space exposure: whole in space"), ADayNightController::ComputeSpaceExposureWeight(45.0f, 30.0f), 1.0f);
 	TestEqual(TEXT("Space exposure: none without an atmosphere"), ADayNightController::ComputeSpaceExposureWeight(1000.0f, 0.0f), 0.0f);
+
+	// The sun's shadows on the atmosphere (visual polish VP1-O6): kept while the scaled air is at most twice as dense as authored.
+	const float Small = ADayNightController::ComputePlanetSkyScale(2.5f, 0.065f, 60.0f, 4.0f);
+	AddInfo(FString::Printf(TEXT("Air near the ground: PlanetTest %.0f, M %.1f, L %.1f, Earth-like %.2f times the authored"), 1.0f / Small, 1.0f / M, 1.0f / L, 1.0f / Earthlike));
+	TestFalse(TEXT("Atmosphere shadows: off on the small planet (230 times the air)"), ADayNightController::ShouldShadowPlanetAtmosphere(Small, 2.0f));
+	TestFalse(TEXT("Atmosphere shadows: off on M (6 times)"), ADayNightController::ShouldShadowPlanetAtmosphere(M, 2.0f));
+	TestTrue(TEXT("Atmosphere shadows: kept on L (1.8 times)"), ADayNightController::ShouldShadowPlanetAtmosphere(L, 2.0f));
+	TestTrue(TEXT("Atmosphere shadows: kept on an Earth-like planet"), ADayNightController::ShouldShadowPlanetAtmosphere(Earthlike, 2.0f));
+	TestTrue(TEXT("Atmosphere shadows: kept on the authored atmosphere"), ADayNightController::ShouldShadowPlanetAtmosphere(1.0f, 1.0f));
+	TestTrue(TEXT("Atmosphere shadows: kept at exactly the limit"), ADayNightController::ShouldShadowPlanetAtmosphere(0.5f, 2.0f));
+	TestTrue(TEXT("Atmosphere shadows: a higher limit keeps M's"), ADayNightController::ShouldShadowPlanetAtmosphere(M, 8.0f));
 	return true;
 }
 
