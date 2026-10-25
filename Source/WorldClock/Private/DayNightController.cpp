@@ -327,9 +327,10 @@ void ADayNightController::CaptureAuthoredValues()
 	{
 		return;
 	}
-	if (SunLight && SunLight->GetComponent())
+	// ALight::GetLightComponent, not ADirectionalLight::GetComponent: that one is editor-only (a packaged game does not compile)
+	if (const UDirectionalLightComponent* Comp = SunLight ? Cast<UDirectionalLightComponent>(SunLight->GetLightComponent()) : nullptr)
 	{
-		AuthoredSunIntensity = SunLight->GetComponent()->Intensity;
+		AuthoredSunIntensity = Comp->Intensity;
 	}
 	if (SkyLight && SkyLight->GetLightComponent())
 	{
@@ -385,7 +386,7 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 	if (SunLight)
 	{
 		SunLight->SetActorRotation(Clock.GetSunRotation());
-		if (UDirectionalLightComponent* Comp = SunLight->GetComponent())
+		if (UDirectionalLightComponent* Comp = Cast<UDirectionalLightComponent>(SunLight->GetLightComponent()))
 		{
 			Comp->SetIntensity(AuthoredSunIntensity * SunIntensityByDaylight.GetRichCurveConst()->Eval(Daylight));
 			Comp->SetLightColor(SunColorFor(Daylight, Elevation, SunColorNight, SunColorDay, SunColorHorizon));
