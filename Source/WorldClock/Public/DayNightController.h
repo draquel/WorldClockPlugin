@@ -103,14 +103,14 @@ public:
 	 * sky light's own position, and one left at the planet's centre (where a map's sky light usually sits) sees the sky
 	 * from inside the planet: no sky light anywhere, every shadow black. Its lower hemisphere is taken from the captured
 	 * sky too: "lower" is world -Z, which on a planet can be half the sky, and the atmosphere already draws the planet's
-	 * ground under the local horizon. The sky light must be movable. The cvar wc.Planet.SkyLightAtViewer 0 turns it off
-	 * (the sky light goes back where the map put it).
+	 * ground under the local horizon. The sky light must be movable. Turned off, the sky light goes back where the map put
+	 * it.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
 	bool bPlanetSkyLightAtViewer = true;
 
 	/**
-	 * Place the sky light for a viewer on a planet (bPlanetSkyLightAtViewer, wc.Planet.SkyLightAtViewer), or put it back
+	 * Place the sky light for a viewer on a planet (bPlanetSkyLightAtViewer), or put it back
 	 * where the map put it when that is off. Called every tick on a planet with the camera's location.
 	 * @param Viewer The camera's location, or null when there is no camera
 	 */
@@ -127,7 +127,7 @@ public:
 	 * shadow cascades, a few hundred metres of it, is 1 / scale times as dense as Earth's (230 times on a 2.5 km planet).
 	 * The terrain's and the trees' shadows in it then darken the sky strongly, and the engine draws them through its
 	 * low-resolution sky view LUT (oriented with the camera) from a few shadow samples per ray: jagged dark patches that
-	 * move and change with the camera. The cvar wc.Planet.AtmosphereShadows 0 keeps the light's own setting.
+	 * move and change with the camera. Turned off, the light keeps its own setting.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet")
 	bool bLimitPlanetAtmosphereShadows = true;
@@ -137,7 +137,7 @@ public:
 	float PlanetAtmosphereShadowMaxDensity = 2.0f;
 
 	/**
-	 * Set the sun's shadows on the atmosphere for a planet (bLimitPlanetAtmosphereShadows, wc.Planet.AtmosphereShadows):
+	 * Set the sun's shadows on the atmosphere for a planet (bLimitPlanetAtmosphereShadows):
 	 * the light's own setting, off while the scaled air is too dense. Called every tick on a planet once the sky is scaled.
 	 */
 	void ApplyPlanetAtmosphereShadows();

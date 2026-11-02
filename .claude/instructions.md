@@ -49,20 +49,20 @@
     `VolumetricCloud` goes with it (`ComputePlanetCloudLayer`: thickness times K, floor at least the terrain's top; G46).
     From half the atmosphere's height up a second post-process meters exposure on the bright part of the view
     (`bPlanetSpaceExposure`, `ComputeSpaceExposureWeight`), so the sunlit planet keeps its exposure from orbit.
-  - *The sky light at the viewer* (`bPlanetSkyLightAtViewer`, cvar `wc.Planet.SkyLightAtViewer`, default 1; visual
+  - *The sky light at the viewer* (`bPlanetSkyLightAtViewer`, default on; visual
     polish VP1-O5): a real-time capture is taken where the sky light stands, and a map's sky light at the planet's
     centre captured the sky from inside the planet (no sky light anywhere, every shadow black). The controller moves it
     to the camera every tick (`ApplyPlanetSkyLight`; the sky light must be movable) and takes its lower hemisphere from
     the captured sky. On `PlanetTest` ground in a hill's shadow went from luma 0 to 69 seen from above.
     `IsSkyLightAtViewer` reports it.
-  - *No sun shadows on dense scaled air* (`bLimitPlanetAtmosphereShadows`, cvar `wc.Planet.AtmosphereShadows`, default
-    1; VP1-O6): the scaled sky packs a column of air into a layer K as thick, so the air within the sun's shadow cascades
+  - *No sun shadows on dense scaled air* (`bLimitPlanetAtmosphereShadows`, default on;
+    VP1-O6): the scaled sky packs a column of air into a layer K as thick, so the air within the sun's shadow cascades
     is 1 / K times as dense as Earth's, and the engine's shadows on the atmosphere (sampled into its camera-turned sky
     view LUT) showed as jagged dark patches moving with the camera, the "pixelated clouds". While the scaled air is over
     `PlanetAtmosphereShadowMaxDensity` (2) times the authored density the sun's `bCastShadowsOnAtmosphere` is off
     (`ShouldShadowPlanetAtmosphere`, `ApplyPlanetAtmosphereShadows`, `AreAtmosphereShadowsLimited`): off on `PlanetTest`
     and `Review_Planet_M`, kept on `Review_Planet_L`. Straight up at 30°N 20°E the sky's blotches fell about sixfold, the
-    ground unchanged. The cvar at 0 keeps the light's own setting.
+    ground unchanged. Off, the light keeps its own setting.
 - `FWorldClockSaveState` + `ExportState` / `ImportState` for a save system.
 
 ## Rules
@@ -79,5 +79,6 @@
 - `wc.Time HH[:MM]` (authority; on a planet the local solar hour where the pawn stands), `wc.TimeScale N` (game seconds
   per real second, 60 = a 24-minute day, 0 = pause), `wc.Clock` (day, time, phase, daylight, scale, sun rotation; on a
   planet the local values too). Registered in `WorldClockConsole.cpp` (moved here from the game module in CR4); the
-  game module's `vox.Time`, `vox.TimeScale` and `vox.Clock` run them. The two `wc.Planet.*` cvars are above. All of
-  them: `Documentation/EDITOR_CONSOLE_GUIDE.md` §6 (project root).
+  game module's `vox.Time`, `vox.TimeScale` and `vox.Clock` run them. The two planet cvars (SkyLightAtViewer,
+  AtmosphereShadows) went in VoxelWorlds 8; the properties above stay. All of them: `Documentation/EDITOR_CONSOLE_GUIDE.md`
+  §6 (project root).

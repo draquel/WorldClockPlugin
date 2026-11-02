@@ -16,7 +16,6 @@
 #include "Engine/Engine.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
-#include "HAL/IConsoleManager.h"
 #include "Engine/World.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -292,7 +291,7 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("Planet: the cloud layer inside the atmosphere"), Cloud->LayerBottomAltitude + Cloud->LayerHeight <= Sky->AtmosphereHeight);
 
 				// The sky light follows the viewer (visual polish VP1-O5): without one it stays put; with one it moves there
-				// and takes its lower hemisphere from the captured sky; wc.Planet.SkyLightAtViewer 0 puts both back.
+				// and takes its lower hemisphere from the captured sky; bPlanetSkyLightAtViewer off puts both back.
 				if (TestNotNull(TEXT("A sky light"), SkyLightComp))
 				{
 					TestTrue(TEXT("Planet sky light: no viewer, no move"), SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && !Controller->IsSkyLightAtViewer());
@@ -300,33 +299,25 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 					Controller->ApplyPlanetSkyLight(&Viewer);
 					TestTrue(TEXT("Planet sky light: at the viewer"), SkyLightActor->GetActorLocation().Equals(Viewer, 1.0) && Controller->IsSkyLightAtViewer());
 					TestFalse(TEXT("Planet sky light: the lower hemisphere from the captured sky"), SkyLightComp->bLowerHemisphereIsBlack);
-					IConsoleVariable* AtViewer = IConsoleManager::Get().FindConsoleVariable(TEXT("wc.Planet.SkyLightAtViewer"));
-					if (TestNotNull(TEXT("wc.Planet.SkyLightAtViewer"), AtViewer))
-					{
-						AtViewer->Set(0, ECVF_SetByCode);
-						Controller->ApplyPlanetSkyLight(&Viewer);
-						TestTrue(TEXT("Planet sky light off: back where the map put it"), SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && !Controller->IsSkyLightAtViewer());
-						TestTrue(TEXT("Planet sky light off: its lower hemisphere black again"), SkyLightComp->bLowerHemisphereIsBlack);
-						AtViewer->Set(1, ECVF_SetByCode);
-					}
+					Controller->bPlanetSkyLightAtViewer = false;
+					Controller->ApplyPlanetSkyLight(&Viewer);
+					TestTrue(TEXT("Planet sky light off: back where the map put it"), SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && !Controller->IsSkyLightAtViewer());
+					TestTrue(TEXT("Planet sky light off: its lower hemisphere black again"), SkyLightComp->bLowerHemisphereIsBlack);
+					Controller->bPlanetSkyLightAtViewer = true;
 				}
 
 				// The sun's shadows on the atmosphere (visual polish VP1-O6): off in the small planet's dense scaled air;
-				// wc.Planet.AtmosphereShadows 0 gives the light its own setting back, 1 takes it again.
+				// bLimitPlanetAtmosphereShadows off gives the light its own setting back, on takes it again.
 				if (TestNotNull(TEXT("A sun"), SunComp))
 				{
 					TestFalse(TEXT("Planet sun: no shadows on the dense scaled atmosphere"), SunComp->bCastShadowsOnAtmosphere);
 					TestTrue(TEXT("Planet sun: reported as limited"), Controller->AreAtmosphereShadowsLimited());
-					IConsoleVariable* AtmosphereShadows = IConsoleManager::Get().FindConsoleVariable(TEXT("wc.Planet.AtmosphereShadows"));
-					if (TestNotNull(TEXT("wc.Planet.AtmosphereShadows"), AtmosphereShadows))
-					{
-						AtmosphereShadows->Set(0, ECVF_SetByCode);
-						Controller->Tick(0.0f);
-						TestTrue(TEXT("Planet sun, cvar 0: the light's own shadows on the atmosphere"), SunComp->bCastShadowsOnAtmosphere && !Controller->AreAtmosphereShadowsLimited());
-						AtmosphereShadows->Set(1, ECVF_SetByCode);
-						Controller->Tick(0.0f);
-						TestFalse(TEXT("Planet sun, cvar 1: off again"), SunComp->bCastShadowsOnAtmosphere);
-					}
+					Controller->bLimitPlanetAtmosphereShadows = false;
+					Controller->Tick(0.0f);
+					TestTrue(TEXT("Planet sun, no limit: the light's own shadows on the atmosphere"), SunComp->bCastShadowsOnAtmosphere && !Controller->AreAtmosphereShadowsLimited());
+					Controller->bLimitPlanetAtmosphereShadows = true;
+					Controller->Tick(0.0f);
+					TestFalse(TEXT("Planet sun, the limit again: off again"), SunComp->bCastShadowsOnAtmosphere);
 					// A limit above the air's density keeps them
 					Controller->PlanetAtmosphereShadowMaxDensity = 1.0f / Controller->GetPlanetSkyScale() + 1.0f;
 					Controller->Tick(0.0f);
