@@ -22,25 +22,6 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "Materials/MaterialParameterCollection.h"
-#include "HAL/IConsoleManager.h"
-
-static TAutoConsoleVariable<int32> CVarWorldClockPlanetSkyLightAtViewer(
-	TEXT("wc.Planet.SkyLightAtViewer"),
-	1,
-	TEXT("On a planet, the sky light's real-time capture follows the camera (visual polish VP1-O5,\n")
-	TEXT("ADayNightController::bPlanetSkyLightAtViewer):\n")
-	TEXT("  1 = at the camera, its lower hemisphere from the captured sky (default)\n")
-	TEXT("  0 = where the map put it, as before (at the planet's centre it captures from inside the planet: no sky light)"),
-	ECVF_Default);
-
-static TAutoConsoleVariable<int32> CVarWorldClockPlanetAtmosphereShadows(
-	TEXT("wc.Planet.AtmosphereShadows"),
-	1,
-	TEXT("On a planet, the sun's shadows on the atmosphere (visual polish VP1-O6, ADayNightController::bLimitPlanetAtmosphereShadows):\n")
-	TEXT("  1 = off while the scaled air is denser than PlanetAtmosphereShadowMaxDensity times the authored (default; on a small\n")
-	TEXT("      planet the shadows show as jagged dark patches in the sky that move with the camera)\n")
-	TEXT("  0 = the light's own setting, as before"),
-	ECVF_Default);
 
 namespace
 {
@@ -295,7 +276,7 @@ void ADayNightController::ApplyPlanetSkyLight(const FVector* Viewer)
 	{
 		return;
 	}
-	const bool bEnabled = bPlanetSkyLightAtViewer && CVarWorldClockPlanetSkyLightAtViewer.GetValueOnGameThread() != 0;
+	const bool bEnabled = bPlanetSkyLightAtViewer;
 	const bool bMovable = Comp->Mobility == EComponentMobility::Movable;
 	UE_CLOG(bEnabled && !bMovable && !bWarnedSkyLightNotMovable, LogWorldClock, Warning,
 		TEXT("DayNightController: the sky light %s is not movable, so it cannot follow the viewer on a planet."), *GetNameSafe(SkyLight));
@@ -348,17 +329,16 @@ void ADayNightController::ApplyPlanetAtmosphereShadows()
 		bAuthoredAtmosphereShadowsCaptured = true;
 		bAuthoredCastShadowsOnAtmosphere = Comp->bCastShadowsOnAtmosphere;
 	}
-	const bool bLimit = bLimitPlanetAtmosphereShadows && CVarWorldClockPlanetAtmosphereShadows.GetValueOnGameThread() != 0;
-	const bool bWanted = bAuthoredCastShadowsOnAtmosphere && (!bLimit || ShouldShadowPlanetAtmosphere(PlanetSkyScale, PlanetAtmosphereShadowMaxDensity));
+	const bool bWanted = bAuthoredCastShadowsOnAtmosphere && (!bLimitPlanetAtmosphereShadows || ShouldShadowPlanetAtmosphere(PlanetSkyScale, PlanetAtmosphereShadowMaxDensity));
 	bAtmosphereShadowsLimited = bAuthoredCastShadowsOnAtmosphere && !bWanted;
 	if (Comp->bCastShadowsOnAtmosphere != bWanted)
 	{
 		// No setter: the proxy copies the flag when it is created.
 		Comp->bCastShadowsOnAtmosphere = bWanted;
 		Comp->MarkRenderStateDirty();
-		UE_LOG(LogWorldClock, Log, TEXT("DayNightController: the sun %s shadows on the atmosphere (the planet's scaled air %.0f times as dense as authored near the ground, the limit %.1f; wc.Planet.AtmosphereShadows %d)."),
+		UE_LOG(LogWorldClock, Log, TEXT("DayNightController: the sun %s shadows on the atmosphere (the planet's scaled air %.0f times as dense as authored near the ground, the limit %.1f; bLimitPlanetAtmosphereShadows %d)."),
 			bWanted ? TEXT("casts") : TEXT("casts no"), 1.0f / FMath::Max(PlanetSkyScale, 1.0e-4f), PlanetAtmosphereShadowMaxDensity,
-			CVarWorldClockPlanetAtmosphereShadows.GetValueOnGameThread());
+			bLimitPlanetAtmosphereShadows ? 1 : 0);
 	}
 }
 
