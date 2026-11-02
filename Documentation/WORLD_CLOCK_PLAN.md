@@ -1,5 +1,7 @@
 # Feature 6 — World clock and day / night cycle (plan, 2026-10-10)
 
+> **Frozen 2026-11-02** (code review CR5, D-CR6). This plan is history, and the plugin's design record: feature 6 (2026-10-10), the planet clock (§11, spherical Phase 4), the sky at scale (Phase 6) and the sky light at the viewer (visual polish VP1-O5), each true on its own date. The clock as it is now, with the later atmosphere-shadow limit (VP1-O6) and the `wc.*` commands moved here in CR4: `.claude/instructions.md` in this plugin. The `vox.Time` / `vox.TimeScale` / `vox.Clock` names it uses run `wc.Time` / `wc.TimeScale` / `wc.Clock`.
+
 Roadmap row: *"Surface time-of-day driving the sun. Prerequisite for darkness mattering."* Feature 7 (light as a
 mechanic) and feature 8 (surface gameplay) consume it; feature 9 (persistence) saves it.
 
