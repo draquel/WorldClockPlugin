@@ -1,6 +1,6 @@
 # WorldClockPlugin — Claude instructions
 
-> State as of 2026-11-02 (code review CR5). This file is the plugin's reference; its design record is
+> State as of 2026-11-02 (code review CR5; the planet clouds, D-VP1). This file is the plugin's reference; its design record is
 > `Documentation/WORLD_CLOCK_PLAN.md` (feature 6 and its planet sections, frozen).
 
 ## Plugin identity
@@ -46,7 +46,9 @@
     scale heights and ozone layer times K, its scattering and absorption divided by K, so the sky from the ground looks
     as authored while from orbit it is a thin shell. K = `ComputePlanetSkyScale`: the sea radius over Earth's, but enough
     for the air to reach `PlanetAtmosphereOverTerrain` (4) times the highest terrain over the sea, at most 1. Every
-    `VolumetricCloud` goes with it (`ComputePlanetCloudLayer`: thickness times K, floor at least the terrain's top; G46).
+    `VolumetricCloud` goes with it (`ComputePlanetCloudLayer`, an `FWorldClockCloudLayer` in and out): thickness and
+    tracing distances (start, from the camera, max, shadow) times K, floor at least `PlanetCloudFloorOverTerrain` (1.5)
+    times the terrain's top (G46; D-VP1, below).
     From half the atmosphere's height up a second post-process meters exposure on the bright part of the view
     (`bPlanetSpaceExposure`, `ComputeSpaceExposureWeight`), so the sunlit planet keeps its exposure from orbit.
   - *The sky light at the viewer* (`bPlanetSkyLightAtViewer`, default on; visual
@@ -63,7 +65,33 @@
     (`ShouldShadowPlanetAtmosphere`, `ApplyPlanetAtmosphereShadows`, `AreAtmosphereShadowsLimited`): off on `PlanetTest`
     and `Review_Planet_M`, kept on `Review_Planet_L`. Straight up at 30°N 20°E the sky's blotches fell about sixfold, the
     ground unchanged. Off, the light keeps its own setting.
+  - *The clouds* (visual polish decision D-VP1, 2026-11-02): scaled as above (VP1-O1), and none on a planet whose sea
+    radius is under `PlanetCloudMinRadiusKm` (10; `ShouldDrawPlanetClouds`, the component's visibility off,
+    `GetHiddenCloudLayers`). Results below.
 - `FWorldClockSaveState` + `ExportState` / `ImportState` for a save system.
+
+## Planet clouds (D-VP1, 2026-11-02)
+
+Before, the engine's layer (5 km floor, 10 km thick, traced from 350 km, 50 km through, 15 km of shadow) had only its
+altitudes scaled: on `PlanetTest` (2.5 km) 65-108 m with the floor at the terrain's top, on `Review_Planet_M` (50 km)
+2.43-4.05 km, a peak in the cloud base. Now the tracing distances scale with K too and the floor is 1.5 times the terrain
+top: `PlanetTest` 98-141 m (hidden), M 3.64-5.26 km traced 8.1 km, shadows 2.4 km, from 56.7 km; L 12.7-18.3 km.
+
+Seen in PIE (30°N 20°E, noon and a 10° sun, eye level, 30° up and straight up, and from 60 and 150 km; images in the
+WorldClockPlugin and parent PRs):
+- **`PlanetTest`**: its clouds were never visible (VP1); hidden, every view differs from before by under 0.7 luma of 255
+  (p99 5). 10 km sits between it and M, the only planets looked at: a planet's layer is K x 10 km thick, tens of metres
+  on a small one, where the Earth-sized cloud material draws nothing.
+- **`Review_Planet_M`**: from the ground a few soft cumulus near the horizon and thin wisps overhead, as before but
+  higher and smaller; no flicker either way (the old and new layer set by hand in one PIE: 0.28-0.34 luma frame to frame
+  with the camera still, 4.6-5.0 turning 2° a frame). From orbit the clouds are gone: the scaled start distance (56.7
+  km) is shorter than the way to the layer from 60 km up. Before, they showed there as faint pale smudges and a ragged
+  halo of patches around the limb; the start distance left at 350 km brings both back.
+- **`VoxelDemo`** (a plane): no planet frame, untouched (the same clouds, drifted by the material's wind).
+
+The look is the cloud material's: `m_SimpleVolumetricCloud_Inst` shapes clouds with noise kilometres across, so M gets
+a sparse field of Earth-sized clouds and its orbit view no cloud pattern. A planet-aware material whose noise follows K
+(VP1-O3, not done) would give smaller, denser clouds on M and a readable pattern from orbit.
 
 ## Rules
 - Never read `TimeOfDaySeconds` directly on clients — always `GetTimeOfDaySeconds()` (extrapolated).

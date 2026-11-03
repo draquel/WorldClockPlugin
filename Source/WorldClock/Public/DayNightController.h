@@ -13,6 +13,33 @@ class AExponentialHeightFog;
 class UMaterialParameterCollection;
 class UPostProcessComponent;
 class UWorldClockSubsystem;
+class UVolumetricCloudComponent;
+
+/**
+ * A volumetric cloud layer's altitudes and tracing distances (km), the values of a UVolumetricCloudComponent that
+ * ADayNightController::ComputePlanetCloudLayer scales to a planet. The defaults are the engine's (Earth's).
+ */
+struct FWorldClockCloudLayer
+{
+	/** Layer bottom altitude over the atmosphere's ground (LayerBottomAltitude) */
+	float BottomKm = 5.0f;
+	/** Layer thickness (LayerHeight) */
+	float HeightKm = 10.0f;
+	/** Farthest the layer may be from the camera for tracing to start (TracingStartMaxDistance) */
+	float TracingStartMaxDistanceKm = 350.0f;
+	/** Tracing starts at least this far from the camera (TracingStartDistanceFromCamera) */
+	float TracingStartDistanceFromCameraKm = 0.0f;
+	/** Length traced through the layer (TracingMaxDistance) */
+	float TracingMaxDistanceKm = 50.0f;
+	/** Length traced toward the sun for the clouds' self-shadowing (ShadowTracingDistance) */
+	float ShadowTracingDistanceKm = 15.0f;
+
+	/** The layer as a component holds it. */
+	static FWorldClockCloudLayer FromComponent(const UVolumetricCloudComponent& Cloud);
+
+	/** Write the layer to a component (its setters, which dirty the render state). */
+	void ApplyTo(UVolumetricCloudComponent& Cloud) const;
+};
 
 /**
  * Drives the world's lighting from the clock (feature 6): sun rotation, sun intensity / colour, sky
@@ -78,6 +105,35 @@ public:
 	/** The scaled atmosphere reaches at least this many times the highest terrain over the sea (its peaks stay in the air). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet", meta = (ClampMin = "1.0"))
 	float PlanetAtmosphereOverTerrain = 4.0f;
+
+	/**
+	 * With a scaled planet sky, the cloud layers' floor is at least this many times the highest terrain over the sea
+	 * (visual polish D-VP1, VP1-O1), so a camera on the highest ground is clear under the clouds rather than in their base:
+	 * volumetric clouds are traced at quarter resolution and rebuilt from earlier frames, which holds for a layer kilometres
+	 * away but smears one that sweeps across the screen just over the camera.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet", meta = (ClampMin = "1.0"))
+	float PlanetCloudFloorOverTerrain = 1.5f;
+
+	/**
+	 * With a planet frame, a planet whose sea radius is under this (km) draws no volumetric clouds (visual polish D-VP1):
+	 * its layer, scaled with its sky, is tens of metres thick and over the peaks, where the engine's Earth-sized cloud
+	 * material gives nothing visible. 0 = clouds on every planet.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Planet", meta = (ClampMin = "0.0"))
+	float PlanetCloudMinRadiusKm = 10.0f;
+
+	/** How many volumetric cloud layers the planet sky hid (PlanetCloudMinRadiusKm), as last applied. */
+	UFUNCTION(BlueprintPure, Category = "DayNight|Planet")
+	int32 GetHiddenCloudLayers() const { return HiddenCloudLayers; }
+
+	/**
+	 * Pure: whether a planet draws volumetric clouds: its sea radius at least MinRadiusKm.
+	 * @param SeaRadiusKm The planet's sea radius (km)
+	 * @param MinRadiusKm PlanetCloudMinRadiusKm
+	 * @return True when the clouds stay
+	 */
+	static bool ShouldDrawPlanetClouds(float SeaRadiusKm, float MinRadiusKm);
 
 	/**
 	 * With a planet frame, the space exposure (WM-BP10): from the top half of the atmosphere up, auto-exposure meters the
@@ -175,18 +231,19 @@ public:
 	static float ComputePlanetSkyScale(float SeaRadiusKm, float TerrainTopKm, float AuthoredHeightKm, float OverTerrain);
 
 	/**
-	 * Pure: a volumetric cloud layer scaled with the atmosphere: its thickness times the sky's scale, its bottom the
-	 * authored bottom times the scale but at least the highest terrain (its altitudes are over the same ground as the
-	 * atmosphere's), so the layer stays inside the scaled atmosphere and above every peak; Earth's 5 km floor over a 50 km
-	 * planet was a halo of clouds far outside its air.
-	 * @param AuthoredBottomKm The authored layer bottom altitude (km)
-	 * @param AuthoredHeightKm The authored layer height (km)
+	 * Pure: a volumetric cloud layer scaled with the atmosphere. Its thickness and its tracing distances (start, from the
+	 * camera, max, shadow) are the authored times the sky's scale, so a ray through the layer spends its samples on a
+	 * layer the planet's size instead of Earth's (visual polish VP1-O1). Its bottom is the authored bottom times the scale
+	 * but at least FloorOverTerrain times the highest terrain (its altitudes are over the same ground as the atmosphere's),
+	 * so the layer stays inside the scaled air and clear over every peak; Earth's 5 km floor over a 50 km planet was a halo
+	 * of clouds far outside its air (G46).
+	 * @param Authored The layer as authored (km)
 	 * @param SkyScale GetPlanetSkyScale
 	 * @param TerrainTopKm The highest terrain over the sea (km; 0 = unknown)
-	 * @param OutBottomKm The scaled bottom altitude (km)
-	 * @param OutHeightKm The scaled height (km)
+	 * @param FloorOverTerrain PlanetCloudFloorOverTerrain (at least 1)
+	 * @return The scaled layer (km)
 	 */
-	static void ComputePlanetCloudLayer(float AuthoredBottomKm, float AuthoredHeightKm, float SkyScale, float TerrainTopKm, float& OutBottomKm, float& OutHeightKm);
+	static FWorldClockCloudLayer ComputePlanetCloudLayer(const FWorldClockCloudLayer& Authored, float SkyScale, float TerrainTopKm, float FloorOverTerrain);
 
 	/**
 	 * Pure: the space exposure's weight at an altitude over the sea: 0 up to half the atmosphere's height, 1 from one and a
@@ -262,7 +319,8 @@ protected:
 
 	/**
 	 * Once a planet frame is set: centre the atmosphere on the planet with its ground at the sea radius, scale it to the
-	 * planet (bScalePlanetSky), hide the Z-up sky and the height fog.
+	 * planet (bScalePlanetSky) with its cloud layers, hide the Z-up sky and the height fog, and the clouds on a planet
+	 * under PlanetCloudMinRadiusKm.
 	 */
 	void ApplyPlanetSky(const UWorldClockSubsystem& Clock);
 	bool bPlanetSkyApplied = false;
@@ -272,6 +330,7 @@ protected:
 
 	float PlanetSkyScale = 1.0f;
 	float PlanetAtmosphereHeightKm = 0.0f;
+	int32 HiddenCloudLayers = 0;
 	float SpaceExposureWeight = 0.0f;
 
 	/** The sky light following the viewer (ApplyPlanetSkyLight), and what to put back when it stops */
