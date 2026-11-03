@@ -238,6 +238,9 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 		{
 			const float CloudBottomBefore = Cloud->LayerBottomAltitude;
 			const float CloudHeightBefore = Cloud->LayerHeight;
+			const float CloudTracingBefore = Cloud->TracingMaxDistance;
+			const float CloudShadowBefore = Cloud->ShadowTracingDistance;
+			const float CloudStartBefore = Cloud->TracingStartMaxDistance;
 			const ESkyAtmosphereTransformMode ModeBefore = Sky->TransformMode;
 			const float BottomBefore = Sky->BottomRadius;
 			const float HeightBefore = Sky->AtmosphereHeight;
@@ -287,8 +290,15 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				AddInfo(FString::Printf(TEXT("Planet clouds %.4f to %.4f km (authored %.1f to %.1f)"), Cloud->LayerBottomAltitude,
 					Cloud->LayerBottomAltitude + Cloud->LayerHeight, CloudBottomBefore, CloudBottomBefore + CloudHeightBefore));
 				TestTrue(TEXT("Planet: the cloud layer's thickness scaled"), FMath::IsNearlyEqual(Cloud->LayerHeight, CloudHeightBefore * K, 1.0e-5f));
-				TestTrue(TEXT("Planet: the cloud layer's floor over the highest terrain"), Cloud->LayerBottomAltitude >= 0.065f - 1.0e-6f);
+				TestTrue(TEXT("Planet: the cloud layer's floor clear over the highest terrain"),
+					Cloud->LayerBottomAltitude >= Controller->PlanetCloudFloorOverTerrain * 0.065f - 1.0e-6f && Controller->PlanetCloudFloorOverTerrain > 1.0f);
 				TestTrue(TEXT("Planet: the cloud layer inside the atmosphere"), Cloud->LayerBottomAltitude + Cloud->LayerHeight <= Sky->AtmosphereHeight);
+				TestTrue(TEXT("Planet: the clouds' tracing distances scaled"), FMath::IsNearlyEqual(Cloud->TracingMaxDistance, CloudTracingBefore * K, 1.0e-4f)
+					&& FMath::IsNearlyEqual(Cloud->ShadowTracingDistance, CloudShadowBefore * K, 1.0e-4f)
+					&& FMath::IsNearlyEqual(Cloud->TracingStartMaxDistance, CloudStartBefore * K, 1.0e-3f));
+				// Under PlanetCloudMinRadiusKm (D-VP1): no volumetric clouds on the 2.5 km planet.
+				TestFalse(TEXT("Planet: no volumetric clouds on the small planet"), Cloud->IsVisible());
+				TestEqual(TEXT("Planet: one cloud layer reported hidden"), Controller->GetHiddenCloudLayers(), 1);
 
 				// The sky light follows the viewer (visual polish VP1-O5): without one it stays put; with one it moves there
 				// and takes its lower hemisphere from the captured sky; bPlanetSkyLightAtViewer off puts both back.
@@ -329,7 +339,8 @@ bool FWorldClockPlanetSkyTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("Plane: the atmosphere untouched"), Sky->TransformMode == ModeBefore && Sky->BottomRadius == BottomBefore);
 				TestFalse(TEXT("Plane: the sky shown"), SkySphere->IsHidden());
 				TestFalse(TEXT("Plane: the fog shown"), Fog->IsHidden());
-				TestTrue(TEXT("Plane: the clouds untouched"), Cloud->LayerBottomAltitude == CloudBottomBefore && Cloud->LayerHeight == CloudHeightBefore);
+				TestTrue(TEXT("Plane: the clouds untouched"), Cloud->LayerBottomAltitude == CloudBottomBefore && Cloud->LayerHeight == CloudHeightBefore
+					&& Cloud->TracingMaxDistance == CloudTracingBefore && Cloud->IsVisible() && Controller->GetHiddenCloudLayers() == 0);
 				TestTrue(TEXT("Plane: the sky light untouched"), !SkyLightComp || (SkyLightActor->GetActorLocation().Equals(Centre, 1.0) && SkyLightComp->bLowerHemisphereIsBlack));
 				TestTrue(TEXT("Plane: the sun's shadows on the atmosphere untouched"), !SunComp || SunComp->bCastShadowsOnAtmosphere);
 			}
@@ -363,19 +374,39 @@ bool FWorldClockPlanetSkyScaleTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Giant: at most the authored atmosphere"), Giant, 1.0f);
 	TestTrue(TEXT("Unknown terrain: the radius"), FMath::IsNearlyEqual(ADayNightController::ComputePlanetSkyScale(50.0f, 0.0f, 60.0f, 4.0f), 50.0f / 6360.0f, 1.0e-6f));
 
-	// The cloud layer (the engine's 5 km floor, 10 km thick) with the sky: over the highest terrain, inside the air.
-	float Bottom = 0.0f, Height = 0.0f;
-	ADayNightController::ComputePlanetCloudLayer(5.0f, 10.0f, L, 8.45f, Bottom, Height);
-	AddInfo(FString::Printf(TEXT("Clouds: L %.2f to %.2f km"), Bottom, Bottom + Height));
-	TestTrue(TEXT("L clouds: the floor at the highest terrain"), FMath::IsNearlyEqual(Bottom, 8.45f, 1.0e-5f));
-	TestTrue(TEXT("L clouds: inside the air"), Bottom + Height <= 60.0f * L);
-	ADayNightController::ComputePlanetCloudLayer(5.0f, 10.0f, M, 2.43f, Bottom, Height);
-	AddInfo(FString::Printf(TEXT("Clouds: M %.2f to %.2f km"), Bottom, Bottom + Height));
-	TestTrue(TEXT("M clouds: the floor at the highest terrain"), FMath::IsNearlyEqual(Bottom, 2.43f, 1.0e-5f));
-	TestTrue(TEXT("M clouds: the thickness scaled"), FMath::IsNearlyEqual(Height, 10.0f * M, 1.0e-5f));
-	TestTrue(TEXT("M clouds: inside the air"), Bottom + Height <= 60.0f * M);
-	ADayNightController::ComputePlanetCloudLayer(5.0f, 10.0f, Earthlike, 1.0f, Bottom, Height);
-	TestTrue(TEXT("Earth-like clouds: the authored layer scaled"), FMath::IsNearlyEqual(Bottom, 5.0f * Earthlike, 1.0e-4f) && FMath::IsNearlyEqual(Height, 10.0f * Earthlike, 1.0e-4f));
+	// The cloud layer (the engine's: a 5 km floor, 10 km thick, traced from 350 km, 50 km through, 15 km of shadow) with
+	// the sky (visual polish VP1-O1, D-VP1): its floor clear over the highest terrain (1.5 times it), inside the air, its
+	// tracing distances by the same scale.
+	const FWorldClockCloudLayer Engine;
+	const FWorldClockCloudLayer CloudsL = ADayNightController::ComputePlanetCloudLayer(Engine, L, 8.45f, 1.5f);
+	AddInfo(FString::Printf(TEXT("Clouds: L %.2f to %.2f km, traced %.1f km"), CloudsL.BottomKm, CloudsL.BottomKm + CloudsL.HeightKm, CloudsL.TracingMaxDistanceKm));
+	TestTrue(TEXT("L clouds: the floor clear over the highest terrain"), FMath::IsNearlyEqual(CloudsL.BottomKm, 1.5f * 8.45f, 1.0e-4f));
+	TestTrue(TEXT("L clouds: inside the air"), CloudsL.BottomKm + CloudsL.HeightKm <= 60.0f * L);
+	const FWorldClockCloudLayer CloudsM = ADayNightController::ComputePlanetCloudLayer(Engine, M, 2.43f, 1.5f);
+	AddInfo(FString::Printf(TEXT("Clouds: M %.2f to %.2f km, traced %.2f km, shadows %.2f km, from %.1f km"), CloudsM.BottomKm,
+		CloudsM.BottomKm + CloudsM.HeightKm, CloudsM.TracingMaxDistanceKm, CloudsM.ShadowTracingDistanceKm, CloudsM.TracingStartMaxDistanceKm));
+	TestTrue(TEXT("M clouds: the floor clear over the highest terrain"), FMath::IsNearlyEqual(CloudsM.BottomKm, 1.5f * 2.43f, 1.0e-4f));
+	TestTrue(TEXT("M clouds: the thickness scaled"), FMath::IsNearlyEqual(CloudsM.HeightKm, 10.0f * M, 1.0e-5f));
+	TestTrue(TEXT("M clouds: inside the air"), CloudsM.BottomKm + CloudsM.HeightKm <= 60.0f * M);
+	TestTrue(TEXT("M clouds: the tracing distances scaled"), FMath::IsNearlyEqual(CloudsM.TracingStartMaxDistanceKm, 350.0f * M, 1.0e-3f)
+		&& FMath::IsNearlyEqual(CloudsM.TracingMaxDistanceKm, 50.0f * M, 1.0e-4f) && FMath::IsNearlyEqual(CloudsM.ShadowTracingDistanceKm, 15.0f * M, 1.0e-4f)
+		&& CloudsM.TracingStartDistanceFromCameraKm == 0.0f);
+	const FWorldClockCloudLayer AtTerrain = ADayNightController::ComputePlanetCloudLayer(Engine, M, 2.43f, 1.0f);
+	TestTrue(TEXT("M clouds, no clearance: the floor at the highest terrain"), FMath::IsNearlyEqual(AtTerrain.BottomKm, 2.43f, 1.0e-5f));
+	const FWorldClockCloudLayer CloudsEarthlike = ADayNightController::ComputePlanetCloudLayer(Engine, Earthlike, 1.0f, 1.5f);
+	TestTrue(TEXT("Earth-like clouds: the authored layer scaled"), FMath::IsNearlyEqual(CloudsEarthlike.BottomKm, 5.0f * Earthlike, 1.0e-4f)
+		&& FMath::IsNearlyEqual(CloudsEarthlike.HeightKm, 10.0f * Earthlike, 1.0e-4f) && FMath::IsNearlyEqual(CloudsEarthlike.TracingMaxDistanceKm, 50.0f * Earthlike, 1.0e-3f));
+	const FWorldClockCloudLayer Authored = ADayNightController::ComputePlanetCloudLayer(Engine, 1.0f, 0.0f, 1.5f);
+	TestTrue(TEXT("The authored sky: the layer as authored"), Authored.BottomKm == Engine.BottomKm && Authored.HeightKm == Engine.HeightKm
+		&& Authored.TracingStartMaxDistanceKm == Engine.TracingStartMaxDistanceKm && Authored.TracingMaxDistanceKm == Engine.TracingMaxDistanceKm
+		&& Authored.ShadowTracingDistanceKm == Engine.ShadowTracingDistanceKm);
+
+	// No volumetric clouds under the radius threshold (D-VP1, 10 km): none on PlanetTest (2.5 km), clouds on M and L.
+	TestFalse(TEXT("Clouds: none on the small planet"), ADayNightController::ShouldDrawPlanetClouds(2.495f, 10.0f));
+	TestTrue(TEXT("Clouds: on M"), ADayNightController::ShouldDrawPlanetClouds(49.75f, 10.0f));
+	TestTrue(TEXT("Clouds: on L"), ADayNightController::ShouldDrawPlanetClouds(999.17f, 10.0f));
+	TestTrue(TEXT("Clouds: at exactly the threshold"), ADayNightController::ShouldDrawPlanetClouds(10.0f, 10.0f));
+	TestTrue(TEXT("Clouds: a threshold of 0 keeps them everywhere"), ADayNightController::ShouldDrawPlanetClouds(2.495f, 0.0f));
 
 	TestEqual(TEXT("Space exposure: none on the ground"), ADayNightController::ComputeSpaceExposureWeight(0.0f, 30.0f), 0.0f);
 	TestEqual(TEXT("Space exposure: none in the lower half of the air"), ADayNightController::ComputeSpaceExposureWeight(15.0f, 30.0f), 0.0f);

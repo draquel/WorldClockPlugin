@@ -133,11 +133,45 @@ float ADayNightController::ComputePlanetSkyScale(float SeaRadiusKm, float Terrai
 	return FMath::Clamp(FMath::Max(ByRadius, ByTerrain), 1.0e-4f, 1.0f);
 }
 
-void ADayNightController::ComputePlanetCloudLayer(float AuthoredBottomKm, float AuthoredHeightKm, float SkyScale, float TerrainTopKm, float& OutBottomKm, float& OutHeightKm)
+FWorldClockCloudLayer FWorldClockCloudLayer::FromComponent(const UVolumetricCloudComponent& Cloud)
+{
+	FWorldClockCloudLayer Layer;
+	Layer.BottomKm = Cloud.LayerBottomAltitude;
+	Layer.HeightKm = Cloud.LayerHeight;
+	Layer.TracingStartMaxDistanceKm = Cloud.TracingStartMaxDistance;
+	Layer.TracingStartDistanceFromCameraKm = Cloud.TracingStartDistanceFromCamera;
+	Layer.TracingMaxDistanceKm = Cloud.TracingMaxDistance;
+	Layer.ShadowTracingDistanceKm = Cloud.ShadowTracingDistance;
+	return Layer;
+}
+
+void FWorldClockCloudLayer::ApplyTo(UVolumetricCloudComponent& Cloud) const
+{
+	Cloud.SetLayerBottomAltitude(BottomKm);
+	Cloud.SetLayerHeight(HeightKm);
+	Cloud.SetTracingStartMaxDistance(TracingStartMaxDistanceKm);
+	Cloud.SetTracingStartDistanceFromCamera(TracingStartDistanceFromCameraKm);
+	Cloud.SetTracingMaxDistance(TracingMaxDistanceKm);
+	Cloud.SetShadowTracingDistance(ShadowTracingDistanceKm);
+}
+
+FWorldClockCloudLayer ADayNightController::ComputePlanetCloudLayer(const FWorldClockCloudLayer& Authored, float SkyScale, float TerrainTopKm, float FloorOverTerrain)
 {
 	const float K = FMath::Clamp(SkyScale, 1.0e-4f, 1.0f);
-	OutBottomKm = FMath::Max(FMath::Max(AuthoredBottomKm, 0.0f) * K, FMath::Max(TerrainTopKm, 0.0f));
-	OutHeightKm = FMath::Max(AuthoredHeightKm, 0.0f) * K;
+	FWorldClockCloudLayer Layer;
+	Layer.BottomKm = FMath::Max(FMath::Max(Authored.BottomKm, 0.0f) * K, FMath::Max(FloorOverTerrain, 1.0f) * FMath::Max(TerrainTopKm, 0.0f));
+	Layer.HeightKm = FMath::Max(Authored.HeightKm, 0.0f) * K;
+	// The distances along a ray, like the aerial perspective's: the layer is K as thick, so K the length holds as many samples per km.
+	Layer.TracingStartMaxDistanceKm = FMath::Max(Authored.TracingStartMaxDistanceKm, 0.0f) * K;
+	Layer.TracingStartDistanceFromCameraKm = FMath::Max(Authored.TracingStartDistanceFromCameraKm, 0.0f) * K;
+	Layer.TracingMaxDistanceKm = FMath::Max(Authored.TracingMaxDistanceKm, 0.0f) * K;
+	Layer.ShadowTracingDistanceKm = FMath::Max(Authored.ShadowTracingDistanceKm, 0.0f) * K;
+	return Layer;
+}
+
+bool ADayNightController::ShouldDrawPlanetClouds(float SeaRadiusKm, float MinRadiusKm)
+{
+	return SeaRadiusKm >= FMath::Max(MinRadiusKm, 0.0f);
 }
 
 bool ADayNightController::ShouldShadowPlanetAtmosphere(float SkyScale, float MaxDensity)
@@ -216,7 +250,10 @@ void ADayNightController::ApplyPlanetSky(const UWorldClockSubsystem& Clock)
 	}
 	int32 Hidden = 0;
 	int32 Clouds = 0;
-	float CloudBottomKm = 0.0f, CloudHeightKm = 0.0f;
+	HiddenCloudLayers = 0;
+	FWorldClockCloudLayer CloudLayer;
+	CloudLayer.BottomKm = CloudLayer.HeightKm = 0.0f;
+	const bool bDrawClouds = ShouldDrawPlanetClouds(Clock.GetPlanetSeaRadius() / 100000.0f, PlanetCloudMinRadiusKm);
 	if (UWorld* World = GetWorld())
 	{
 		for (TActorIterator<AActor> It(World); It; ++It)
@@ -226,14 +263,23 @@ void ADayNightController::ApplyPlanetSky(const UWorldClockSubsystem& Clock)
 				It->SetActorHiddenInGame(true);
 				++Hidden;
 			}
-			// The cloud layers' altitudes are over the atmosphere's ground: scaled with it (WM-BP10).
-			UVolumetricCloudComponent* Cloud = (Sky && bScalePlanetSky) ? It->FindComponentByClass<UVolumetricCloudComponent>() : nullptr;
-			if (Cloud)
+			UVolumetricCloudComponent* Cloud = It->FindComponentByClass<UVolumetricCloudComponent>();
+			if (!Cloud)
 			{
-				ComputePlanetCloudLayer(Cloud->LayerBottomAltitude, Cloud->LayerHeight, PlanetSkyScale, Clock.GetPlanetTerrainTop() / 100000.0f, CloudBottomKm, CloudHeightKm);
-				Cloud->SetLayerBottomAltitude(CloudBottomKm);
-				Cloud->SetLayerHeight(CloudHeightKm);
+				continue;
+			}
+			// The cloud layers' altitudes are over the atmosphere's ground: scaled with it (WM-BP10), their tracing too (VP1-O1).
+			if (Sky && bScalePlanetSky)
+			{
+				CloudLayer = ComputePlanetCloudLayer(FWorldClockCloudLayer::FromComponent(*Cloud), PlanetSkyScale, Clock.GetPlanetTerrainTop() / 100000.0f, PlanetCloudFloorOverTerrain);
+				CloudLayer.ApplyTo(*Cloud);
 				++Clouds;
+			}
+			// A small planet draws none (D-VP1).
+			if (!bDrawClouds && Cloud->IsVisible())
+			{
+				Cloud->SetVisibility(false);
+				++HiddenCloudLayers;
 			}
 		}
 	}
@@ -245,9 +291,10 @@ void ADayNightController::ApplyPlanetSky(const UWorldClockSubsystem& Clock)
 			Fog->SetVisibility(false);
 		}
 	}
-	UE_LOG(LogWorldClock, Log, TEXT("DayNightController: planet sky: atmosphere %s at %s (ground %.3f km, %.3f km high, scale %.4f of the authored), %d cloud layer(s) scaled (%.3f to %.3f km), %d Z-up sky actor(s) hidden, height fog %s."),
+	UE_LOG(LogWorldClock, Log, TEXT("DayNightController: planet sky: atmosphere %s at %s (ground %.3f km, %.3f km high, scale %.4f of the authored), %d cloud layer(s) scaled (%.3f to %.3f km, traced %.2f km, shadows %.2f km, from %.1f km), %d cloud layer(s) hidden (planets under %.1f km), %d Z-up sky actor(s) hidden, height fog %s."),
 		*GetNameSafe(SkyAtmosphereActor), *Clock.GetPlanetCenter().ToCompactString(), Clock.GetPlanetSeaRadius() / 100000.0f,
-		PlanetAtmosphereHeightKm, PlanetSkyScale, Clouds, CloudBottomKm, CloudBottomKm + CloudHeightKm, Hidden, HeightFog ? TEXT("hidden") : TEXT("none"));
+		PlanetAtmosphereHeightKm, PlanetSkyScale, Clouds, CloudLayer.BottomKm, CloudLayer.BottomKm + CloudLayer.HeightKm, CloudLayer.TracingMaxDistanceKm,
+		CloudLayer.ShadowTracingDistanceKm, CloudLayer.TracingStartMaxDistanceKm, HiddenCloudLayers, PlanetCloudMinRadiusKm, Hidden, HeightFog ? TEXT("hidden") : TEXT("none"));
 }
 
 void ADayNightController::ApplySpaceExposure(const UWorldClockSubsystem& Clock)
