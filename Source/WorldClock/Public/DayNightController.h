@@ -10,6 +10,7 @@
 class ADirectionalLight;
 class ASkyLight;
 class AExponentialHeightFog;
+class UMaterialInstanceDynamic;
 class UMaterialParameterCollection;
 class UPostProcessComponent;
 class UWorldClockSubsystem;
@@ -39,6 +40,68 @@ struct FWorldClockCloudLayer
 
 	/** Write the layer to a component (its setters, which dirty the render state). */
 	void ApplyTo(UVolumetricCloudComponent& Cloud) const;
+};
+
+/**
+ * What another system (the weather) asks of the sky this tick, applied in ADayNightController::Apply on top of the
+ * controller's own curves: multipliers of the sun, the sky light and the height fog, a tint on the fog, absolute cloud
+ * coverage and density, a lightning flash. Identity by default, so a world without weather is untouched. The controller
+ * stays the one writer of the sky actors (the weather plan's D61): two tickers writing the fog density would fight, a
+ * slot cannot.
+ */
+USTRUCT(BlueprintType)
+struct WORLDCLOCK_API FDayNightModifiers
+{
+	GENERATED_BODY()
+
+	/** Multiplies the sun's intensity after the daylight curve (0.3 under a storm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modifiers", meta = (ClampMin = "0"))
+	float SunIntensityScale = 1.0f;
+
+	/** Multiplies the sky light's intensity after the daylight curve. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modifiers", meta = (ClampMin = "0"))
+	float SkyLightIntensityScale = 1.0f;
+
+	/** Multiplies the height fog's density after the daylight curve (where a height fog exists and is shown). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modifiers", meta = (ClampMin = "0"))
+	float FogDensityScale = 1.0f;
+
+	/** Multiplies the height fog's inscattering colour (grey under an overcast). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modifiers")
+	FLinearColor FogTint = FLinearColor::White;
+
+	/** The volumetric clouds' coverage parameter (CloudCoverageParameter), absolute; negative leaves the material's own. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modifiers", meta = (ClampMax = "1"))
+	float CloudCoverage = -1.0f;
+
+	/** The volumetric clouds' density parameter (CloudDensityParameter), absolute; negative leaves the material's own. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modifiers", meta = (ClampMax = "1"))
+	float CloudDensity = -1.0f;
+
+	/** A lightning flash this tick (0..1): the sky light brightened by 1 + flash x LightningFlashSkyLight. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Modifiers", meta = (ClampMin = "0", ClampMax = "1"))
+	float LightningFlash = 0.0f;
+
+	/** Nothing asked: every multiplier 1, no tint, no cloud override, no flash. */
+	bool IsIdentity() const;
+};
+
+/** A volumetric cloud layer's dynamic material once a modifier first set its coverage or density, with the authored values to restore. */
+USTRUCT()
+struct FDayNightCloudMaterial
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<UVolumetricCloudComponent> Cloud;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> Material;
+
+	float AuthoredCoverage = 0.0f;
+	float AuthoredDensity = 0.0f;
+	bool bHasCoverage = false;
+	bool bHasDensity = false;
 };
 
 /**
@@ -254,6 +317,38 @@ public:
 	 */
 	static float ComputeSpaceExposureWeight(float AltitudeKm, float AtmosphereHeightKm);
 
+	// --- The modifier slot (the weather plan's D61) ---
+
+	/** What another system asks of the sky this tick, applied in Apply on top of the curves. Identity by default. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Modifiers")
+	FDayNightModifiers Modifiers;
+
+	/** Fill the slot (the weather subsystem does, every tick on every machine). */
+	UFUNCTION(BlueprintCallable, Category = "DayNight|Modifiers")
+	void SetModifiers(const FDayNightModifiers& InModifiers) { Modifiers = InModifiers; }
+
+	UFUNCTION(BlueprintPure, Category = "DayNight|Modifiers")
+	const FDayNightModifiers& GetModifiers() const { return Modifiers; }
+
+	/** The cloud material's coverage parameter the slot writes (the engine's m_SimpleVolumetricCloud exposes this one). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Modifiers")
+	FName CloudCoverageParameter = TEXT("Cloud_GlobalCoverage");
+
+	/** The cloud material's density parameter the slot writes. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Modifiers")
+	FName CloudDensityParameter = TEXT("Cloud_GlobalDensity");
+
+	/** How much a full lightning flash brightens the sky light (times its intensity, added). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Modifiers", meta = (ClampMin = "0"))
+	float LightningFlashSkyLight = 4.0f;
+
+	/** The volumetric cloud layers in the level (found by class at BeginPlay when bAutoFindTargets). */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "DayNight|Targets")
+	TArray<TObjectPtr<UVolumetricCloudComponent>> CloudLayers;
+
+	/** How many cloud layers have a dynamic material from the slot (one per layer once a modifier set coverage or density). */
+	int32 GetCloudMaterialCount() const { return CloudMaterials.Num(); }
+
 	/** Optional: scalar parameters TimeOfDay (hours) and Daylight (0-1) are written here each tick for materials. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DayNight|Targets")
 	TObjectPtr<UMaterialParameterCollection> ParameterCollection;
@@ -347,6 +442,12 @@ protected:
 	void FindTargets();
 	void CaptureAuthoredValues();
 	void Apply(const UWorldClockSubsystem& Clock);
+
+	/** Write the slot's cloud coverage and density to each layer's material (a dynamic instance made on the first write). */
+	void ApplyCloudModifiers();
+
+	UPROPERTY()
+	TArray<FDayNightCloudMaterial> CloudMaterials;
 
 	float AuthoredSunIntensity = 6.0f;
 	float AuthoredSkyLightIntensity = 1.0f;
