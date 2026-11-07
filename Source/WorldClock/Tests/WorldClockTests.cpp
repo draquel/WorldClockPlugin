@@ -17,6 +17,7 @@
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -424,6 +425,117 @@ bool FWorldClockPlanetSkyScaleTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Atmosphere shadows: kept on the authored atmosphere"), ADayNightController::ShouldShadowPlanetAtmosphere(1.0f, 1.0f));
 	TestTrue(TEXT("Atmosphere shadows: kept at exactly the limit"), ADayNightController::ShouldShadowPlanetAtmosphere(0.5f, 2.0f));
 	TestTrue(TEXT("Atmosphere shadows: a higher limit keeps M's"), ADayNightController::ShouldShadowPlanetAtmosphere(M, 8.0f));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The modifier slot (the weather plan's D61): identity leaves the lights as the curves set them; a filled slot scales the
+// sun, the sky light and the fog, tints the fog, drives the clouds' material through a dynamic instance and flashes the
+// sky light; cleared, the authored cloud values come back.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWorldClockModifiersTest, "WorldClock.Lighting.Modifiers", WORLDCLOCK_TEST_FLAGS)
+bool FWorldClockModifiersTest::RunTest(const FString& Parameters)
+{
+	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("WorldClockModifiersTest"));
+	FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+	Context.SetCurrentWorld(World);
+	UWorldClockSubsystem* Clock = World->GetSubsystem<UWorldClockSubsystem>();
+	ADirectionalLight* SunActor = World->SpawnActor<ADirectionalLight>();
+	UDirectionalLightComponent* Sun = SunActor ? Cast<UDirectionalLightComponent>(SunActor->GetLightComponent()) : nullptr;
+	ASkyLight* SkyLightActor = World->SpawnActor<ASkyLight>();
+	USkyLightComponent* Sky = SkyLightActor ? SkyLightActor->GetLightComponent() : nullptr;
+	AExponentialHeightFog* FogActor = World->SpawnActor<AExponentialHeightFog>();
+	UExponentialHeightFogComponent* Fog = FogActor ? FogActor->GetComponent() : nullptr;
+	AVolumetricCloud* CloudActor = World->SpawnActor<AVolumetricCloud>();
+	UVolumetricCloudComponent* Cloud = CloudActor ? CloudActor->FindComponentByClass<UVolumetricCloudComponent>() : nullptr;
+	ADayNightController* Controller = World->SpawnActor<ADayNightController>();
+	if (TestNotNull(TEXT("A clock"), Clock) && TestNotNull(TEXT("A sun"), Sun) && TestNotNull(TEXT("A sky light"), Sky) && TestNotNull(TEXT("A fog"), Fog)
+		&& TestNotNull(TEXT("A cloud layer"), Cloud) && TestNotNull(TEXT("A controller"), Controller))
+	{
+		Clock->SetTimeOfDay(12.0f); // noon: every daylight curve at 1
+		Sun->SetIntensity(6.0f);
+		Sky->SetIntensity(1.5f);
+		Fog->SetFogDensity(0.02f);
+		Controller->SunLight = SunActor;
+		Controller->SkyLight = SkyLightActor;
+		Controller->HeightFog = FogActor;
+		Controller->CloudLayers.Add(Cloud);
+		UMaterialInterface* AuthoredMaterial = Cloud->GetMaterial();
+
+		TestTrue(TEXT("The slot is identity by default"), Controller->GetModifiers().IsIdentity());
+		Controller->Tick(0.0f); // captures the authored values on the first apply
+		Controller->Tick(0.0f);
+		const float SunNoon = Sun->Intensity;
+		const float SkyNoon = Sky->Intensity;
+		const float FogNoon = Fog->FogDensity;
+		const FLinearColor FogColourNoon = Fog->FogInscatteringLuminance;
+		AddInfo(FString::Printf(TEXT("Noon, identity: sun %.3f sky %.3f fog %.4f"), SunNoon, SkyNoon, FogNoon));
+		TestTrue(TEXT("Identity: the sun as the curve sets it"), FMath::IsNearlyEqual(SunNoon, 6.0f * Controller->SunIntensityByDaylight.GetRichCurveConst()->Eval(1.0f), 1.0e-4f));
+		TestTrue(TEXT("Identity: the cloud material untouched"), Cloud->GetMaterial() == AuthoredMaterial && Controller->GetCloudMaterialCount() == 0);
+
+		FDayNightModifiers M;
+		M.SunIntensityScale = 0.3f;
+		M.SkyLightIntensityScale = 0.6f;
+		M.FogDensityScale = 4.0f;
+		M.FogTint = FLinearColor(0.5f, 0.5f, 0.5f);
+		M.CloudCoverage = 0.9f;
+		M.CloudDensity = 0.8f;
+		TestFalse(TEXT("A filled slot is not identity"), M.IsIdentity());
+		Controller->SetModifiers(M);
+		Controller->Tick(0.0f);
+		TestTrue(TEXT("The sun scaled"), FMath::IsNearlyEqual(Sun->Intensity, SunNoon * 0.3f, 1.0e-4f));
+		TestTrue(TEXT("The sky light scaled"), FMath::IsNearlyEqual(Sky->Intensity, SkyNoon * 0.6f, 1.0e-4f));
+		TestTrue(TEXT("The fog density scaled"), FMath::IsNearlyEqual(Fog->FogDensity, FogNoon * 4.0f, 1.0e-6f));
+		TestTrue(TEXT("The fog colour tinted"), Fog->FogInscatteringLuminance.Equals(FogColourNoon * M.FogTint, 1.0e-4f)); // the tint keeps the alpha
+		UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Cloud->GetMaterial());
+		if (AuthoredMaterial)
+		{
+			if (TestNotNull(TEXT("The cloud layer has a dynamic material now"), MID))
+			{
+				TestEqual(TEXT("One cloud material slot"), Controller->GetCloudMaterialCount(), 1);
+				float Coverage = -1.0f, Density = -1.0f;
+				const bool bCoverage = MID->GetScalarParameterValue(FMaterialParameterInfo(Controller->CloudCoverageParameter), Coverage);
+				const bool bDensity = MID->GetScalarParameterValue(FMaterialParameterInfo(Controller->CloudDensityParameter), Density);
+				AddInfo(FString::Printf(TEXT("Cloud material %s: %s %s%.2f, %s %s%.2f"), *AuthoredMaterial->GetName(), *Controller->CloudCoverageParameter.ToString(),
+					bCoverage ? TEXT("") : TEXT("(absent) "), Coverage, *Controller->CloudDensityParameter.ToString(), bDensity ? TEXT("") : TEXT("(absent) "), Density));
+				if (bCoverage)
+				{
+					TestTrue(TEXT("The coverage written"), FMath::IsNearlyEqual(Coverage, 0.9f, 1.0e-5f));
+				}
+				if (bDensity)
+				{
+					TestTrue(TEXT("The density written"), FMath::IsNearlyEqual(Density, 0.8f, 1.0e-5f));
+				}
+			}
+		}
+		else
+		{
+			AddInfo(TEXT("The cloud layer has no material here (headless): the material path is not covered by this run"));
+		}
+
+		// A flash brightens the sky light on top of the scale; cleared, everything returns, the clouds to the authored values.
+		M.LightningFlash = 1.0f;
+		Controller->SetModifiers(M);
+		Controller->Tick(0.0f);
+		TestTrue(TEXT("A full flash brightens the sky light"), FMath::IsNearlyEqual(Sky->Intensity, SkyNoon * 0.6f * (1.0f + Controller->LightningFlashSkyLight), 1.0e-4f));
+		Controller->SetModifiers(FDayNightModifiers());
+		Controller->Tick(0.0f);
+		TestTrue(TEXT("Cleared: the sun back"), FMath::IsNearlyEqual(Sun->Intensity, SunNoon, 1.0e-4f));
+		TestTrue(TEXT("Cleared: the sky light back"), FMath::IsNearlyEqual(Sky->Intensity, SkyNoon, 1.0e-4f));
+		TestTrue(TEXT("Cleared: the fog back"), FMath::IsNearlyEqual(Fog->FogDensity, FogNoon, 1.0e-6f) && Fog->FogInscatteringLuminance.Equals(FogColourNoon, 1.0e-4f));
+		if (MID)
+		{
+			float Coverage = -1.0f;
+			if (MID->GetScalarParameterValue(FMaterialParameterInfo(Controller->CloudCoverageParameter), Coverage))
+			{
+				float Authored = -1.0f;
+				AuthoredMaterial->GetScalarParameterValue(FMaterialParameterInfo(Controller->CloudCoverageParameter), Authored);
+				TestTrue(TEXT("Cleared: the clouds' authored coverage back"), FMath::IsNearlyEqual(Coverage, Authored, 1.0e-5f));
+			}
+		}
+	}
+	GEngine->DestroyWorldContext(World);
+	World->DestroyWorld(false);
 	return true;
 }
 

@@ -21,6 +21,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Kismet/KismetMaterialLibrary.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialParameterCollection.h"
 
 namespace
@@ -35,6 +36,12 @@ namespace
 		}
 		Rich->AutoSetTangents();
 	}
+}
+
+bool FDayNightModifiers::IsIdentity() const
+{
+	return SunIntensityScale == 1.0f && SkyLightIntensityScale == 1.0f && FogDensityScale == 1.0f && FogTint.Equals(FLinearColor::White)
+		&& CloudCoverage < 0.0f && CloudDensity < 0.0f && LightningFlash <= 0.0f;
 }
 
 ADayNightController::ADayNightController()
@@ -108,6 +115,16 @@ void ADayNightController::FindTargets()
 			{
 				SkyAtmosphereActor = *It;
 				break;
+			}
+		}
+	}
+	if (CloudLayers.Num() == 0)
+	{
+		for (TActorIterator<AVolumetricCloud> It(World); It; ++It)
+		{
+			if (UVolumetricCloudComponent* Cloud = It->FindComponentByClass<UVolumetricCloudComponent>())
+			{
+				CloudLayers.Add(Cloud);
 			}
 		}
 	}
@@ -457,19 +474,21 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 		SunLight->SetActorRotation(Clock.GetSunRotation());
 		if (UDirectionalLightComponent* Comp = Cast<UDirectionalLightComponent>(SunLight->GetLightComponent()))
 		{
-			Comp->SetIntensity(AuthoredSunIntensity * SunIntensityByDaylight.GetRichCurveConst()->Eval(Daylight));
+			Comp->SetIntensity(AuthoredSunIntensity * SunIntensityByDaylight.GetRichCurveConst()->Eval(Daylight) * FMath::Max(Modifiers.SunIntensityScale, 0.0f));
 			Comp->SetLightColor(SunColorFor(Daylight, Elevation, SunColorNight, SunColorDay, SunColorHorizon));
 		}
 	}
 	if (SkyLight && SkyLight->GetLightComponent())
 	{
-		SkyLight->GetLightComponent()->SetIntensity(AuthoredSkyLightIntensity * SkyLightIntensityByDaylight.GetRichCurveConst()->Eval(Daylight));
+		// The slot's scale, and a lightning flash as a brief brightening of the whole sky.
+		SkyLight->GetLightComponent()->SetIntensity(AuthoredSkyLightIntensity * SkyLightIntensityByDaylight.GetRichCurveConst()->Eval(Daylight)
+			* FMath::Max(Modifiers.SkyLightIntensityScale, 0.0f) * (1.0f + FMath::Clamp(Modifiers.LightningFlash, 0.0f, 1.0f) * LightningFlashSkyLight));
 	}
 	if (HeightFog && HeightFog->GetComponent() && !bPlanet)
 	{
 		UExponentialHeightFogComponent* Fog = HeightFog->GetComponent();
-		Fog->SetFogDensity(AuthoredFogDensity * FogDensityByDaylight.GetRichCurveConst()->Eval(Daylight));
-		Fog->SetFogInscatteringColor(FMath::Lerp(FogColorNight, FogColorDay, Daylight));
+		Fog->SetFogDensity(AuthoredFogDensity * FogDensityByDaylight.GetRichCurveConst()->Eval(Daylight) * FMath::Max(Modifiers.FogDensityScale, 0.0f));
+		Fog->SetFogInscatteringColor(FMath::Lerp(FogColorNight, FogColorDay, Daylight) * Modifiers.FogTint);
 	}
 	if (ExposurePostProcess)
 	{
@@ -481,5 +500,62 @@ void ADayNightController::Apply(const UWorldClockSubsystem& Clock)
 	{
 		UKismetMaterialLibrary::SetScalarParameterValue(this, ParameterCollection, TEXT("TimeOfDay"), Hour);
 		UKismetMaterialLibrary::SetScalarParameterValue(this, ParameterCollection, TEXT("Daylight"), Daylight);
+	}
+	ApplyCloudModifiers();
+}
+
+void ADayNightController::ApplyCloudModifiers()
+{
+	const bool bCoverage = Modifiers.CloudCoverage >= 0.0f;
+	const bool bDensity = Modifiers.CloudDensity >= 0.0f;
+	if (!bCoverage && !bDensity && CloudMaterials.Num() == 0)
+	{
+		return; // nothing asked and nothing ever written: the authored material stays
+	}
+	for (UVolumetricCloudComponent* Cloud : CloudLayers)
+	{
+		if (!Cloud)
+		{
+			continue;
+		}
+		FDayNightCloudMaterial* Slot = CloudMaterials.FindByPredicate([Cloud](const FDayNightCloudMaterial& M) { return M.Cloud == Cloud; });
+		if (!Slot)
+		{
+			if (!bCoverage && !bDensity)
+			{
+				continue;
+			}
+			// The first write: a dynamic instance of the layer's material, the authored values kept to restore.
+			UMaterialInterface* Parent = Cloud->GetMaterial();
+			if (!Parent)
+			{
+				continue;
+			}
+			UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(Parent);
+			if (!MID)
+			{
+				MID = UMaterialInstanceDynamic::Create(Parent, this);
+				Cloud->SetMaterial(MID);
+			}
+			FDayNightCloudMaterial& New = CloudMaterials.AddDefaulted_GetRef();
+			New.Cloud = Cloud;
+			New.Material = MID;
+			New.bHasCoverage = MID->GetScalarParameterValue(FMaterialParameterInfo(CloudCoverageParameter), New.AuthoredCoverage);
+			New.bHasDensity = MID->GetScalarParameterValue(FMaterialParameterInfo(CloudDensityParameter), New.AuthoredDensity);
+			if (!New.bHasCoverage && !New.bHasDensity)
+			{
+				UE_LOG(LogWorldClock, Warning, TEXT("DayNightController: the cloud material %s has neither %s nor %s; the slot cannot drive its coverage."),
+					*Parent->GetName(), *CloudCoverageParameter.ToString(), *CloudDensityParameter.ToString());
+			}
+			Slot = &New;
+		}
+		if (Slot->Material && Slot->bHasCoverage)
+		{
+			Slot->Material->SetScalarParameterValue(CloudCoverageParameter, bCoverage ? FMath::Min(Modifiers.CloudCoverage, 1.0f) : Slot->AuthoredCoverage);
+		}
+		if (Slot->Material && Slot->bHasDensity)
+		{
+			Slot->Material->SetScalarParameterValue(CloudDensityParameter, bDensity ? FMath::Min(Modifiers.CloudDensity, 1.0f) : Slot->AuthoredDensity);
+		}
 	}
 }
