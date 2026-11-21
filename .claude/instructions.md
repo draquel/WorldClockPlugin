@@ -1,6 +1,6 @@
 # WorldClockPlugin — Claude instructions
 
-> State as of 2026-11-02 (code review CR5; the planet clouds, D-VP1). This file is the plugin's reference; its design record is
+> State as of 2026-11-06 (the weather system's P1: the modifier slot; before it code review CR5 and the planet clouds, D-VP1). This file is the plugin's reference; its design record is
 > `Documentation/WORLD_CLOCK_PLAN.md` (feature 6 and its planet sections, frozen).
 
 ## Plugin identity
@@ -69,6 +69,15 @@
     radius is under `PlanetCloudMinRadiusKm` (10; `ShouldDrawPlanetClouds`, the component's visibility off,
     `GetHiddenCloudLayers`). Results below.
 - `FWorldClockSaveState` + `ExportState` / `ImportState` for a save system.
+- **The modifier slot** (the weather system's P1, 2026-11-06; the weather plan's D61): `FDayNightModifiers` on the
+  controller (`Modifiers`, `SetModifiers`), identity by default: multipliers of the sun, the sky light and the height
+  fog's density applied in `Apply` after the daylight curves, a tint multiplied into the fog's inscattering colour,
+  absolute cloud coverage and density written to every `AVolumetricCloud` layer's material (`CloudLayers`, found by
+  class at BeginPlay; `CloudCoverageParameter` / `CloudDensityParameter`, the engine's `Cloud_GlobalCoverage` /
+  `Cloud_GlobalDensity`; a dynamic instance made on the first write, the authored values restored when the slot goes
+  negative), and a lightning flash that brightens the sky light by `1 + flash x LightningFlashSkyLight`. The controller
+  stays the one writer of the sky actors: `UWorldWeatherSubsystem` fills the slot every tick on every machine; a world
+  without weather is untouched. Test `WorldClock.Lighting.Modifiers`.
 
 ## Planet clouds (D-VP1, 2026-11-02)
 
@@ -101,7 +110,7 @@ a sparse field of Earth-sized clouds and its orbit view no cloud pattern. A plan
 - Consumers that act at a place (spawners, sleeping, the HUD) ask the `Local*` functions with that place: on a planet
   the global hour is longitude 0's.
 - Tests: `WorldClock.*` (EditorContext | EngineFilter), pure, no world: `WorldClock.Math.*`, `Clock.Extrapolation`,
-  `Lighting.SunColor`, `Planet.SolarTime`, `Planet.Sky`, `Planet.SkyScale`, `ZUpSky`.
+  `Lighting.SunColor`, `Lighting.Modifiers`, `Planet.SolarTime`, `Planet.Sky`, `Planet.SkyScale`, `ZUpSky`.
 
 ## Console
 - `wc.Time HH[:MM]` (authority; on a planet the local solar hour where the pawn stands), `wc.TimeScale N` (game seconds
